@@ -1,0 +1,37 @@
+@import "tailwindcss";
+
+:root {
+  --paper: #f3ead9;
+  --ink: #241c16;
+  --muted: #6b5e52;
+  --terracotta: #c45c26;
+  --teal: #2c4a45;
+  --card: #fffaf2;
+}
+
+@theme inline {
+  --color-paper: var(--paper);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-terracotta: var(--terracotta);
+  --color-teal: var(--teal);
+  --color-card: var(--card);
+  --font-sans: var(--font-source);
+  --font-display: var(--font-fraunces);
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  background:
+    radial-gradient(1200px 500px at 10% -10%, #edd9b8 0%, transparent 55%),
+    var(--paper);
+  color: var(--ink);
+}
+
+::selection {
+  background: #e8c9a8;
+}
