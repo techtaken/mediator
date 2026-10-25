@@ -95,9 +95,9 @@ Translate accusatory language into underlying emotional needs using Non-Violent 
 @app.post("/api/mediate")
 async def mediate_conflict(request: ChatRequest):
     try:
-        # Call Gemini using gemini-2.5-flash for speed and reasoning
+        # Call Gemini using gemini-3.5-flash-lite for speed and reasoning
         response = client.models.generate_content(
-            model='gemini-3.8-flash',
+            model='gemini-3.5-flash-lite',
             contents=f"Context: {request.context}\nUser Input: {request.user_input}",
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_INSTRUCTION,
