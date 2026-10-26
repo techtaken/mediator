@@ -139,7 +139,10 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     session?.party === "user_a" ? session.user_a_ready : session?.user_b_ready;
   const otherReady =
     session?.party === "user_a" ? session.user_b_ready : session?.user_a_ready;
-  const showJoint = session?.status === "joint_review" || session?.status === "resolved";
+  const showJoint =
+    session?.status === "building_joint" ||
+    session?.status === "joint_review" ||
+    session?.status === "resolved";
 
   return (
     <main className="mx-auto flex h-[100dvh] w-full max-w-lg flex-col">
@@ -177,15 +180,26 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
 
       {session?.status === "halted" ? (
         <section className="flex-1 overflow-y-auto px-4 py-6">
-          <h1 className="font-[family-name:var(--font-display)] text-2xl">This room has stopped</h1>
-          <p className="mt-3 whitespace-pre-wrap text-muted">
-            Mediator cannot continue when there is crisis language, violence, or abuse.
-            {"\n\n"}
-            iCall: 9152987821{"\n"}
-            Vandrevala Foundation: 1860-2662-345{"\n"}
-            AASRA: 9820466726{"\n"}
-            Emergency: 112
-          </p>
+          {session.halt_view === "other" ? (
+            <>
+              <h1 className="font-[family-name:var(--font-display)] text-2xl">This session is paused</h1>
+              <p className="mt-3 text-muted">{session.halt_message}</p>
+            </>
+          ) : (
+            <>
+              <h1 className="font-[family-name:var(--font-display)] text-2xl">This room has stopped</h1>
+              <p className="mt-3 text-muted">
+                Mediator cannot continue when someone may be unsafe. Please reach out to people who can help
+                right now:
+              </p>
+              <ul className="mt-3 space-y-1 text-ink">
+                {session.helplines.map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+              <p className="mt-3 text-sm text-muted">If someone is in immediate danger, call 112.</p>
+            </>
+          )}
         </section>
       ) : showJoint ? (
         <section className="flex-1 overflow-y-auto px-4 py-6">
@@ -207,8 +221,8 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
               <div>
                 <h2 className="text-sm uppercase tracking-wide text-muted">Possible compromises</h2>
                 <ol className="mt-3 space-y-3">
-                  {summary.compromises.map((item) => (
-                    <li key={item} className="rounded-2xl bg-teal px-4 py-3 text-card">
+                  {summary.compromises.map((item, index) => (
+                    <li key={`${index}-${item}`} className="rounded-2xl bg-teal px-4 py-3 text-card">
                       {item}
                     </li>
                   ))}

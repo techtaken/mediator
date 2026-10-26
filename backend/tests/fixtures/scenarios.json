@@ -1,0 +1,11 @@
+{
+  "scenarios": [
+    {
+      "id": "expensive-phone",
+      "relationship_context": "Father and 23-year-old daughter (student, doing an internship)",
+      "summary": "Daughter wants an expensive phone; father thinks she should value simplicity or buy it herself.",
+      "party_a": "hi , my daughter is demanding expensive phone ig its google10 a , an i am not able to make her understand the importance of simplisity, i dont want to telll her directly that u are 23 yr old now , buy on ur own",
+      "party_b": "i want a phone , all my friends have iphone , and i am stuck with this old oppo phone , my main motive is to get good , cemera , i am embaressaed ,to alway ask others to click pic of me asn then ask them later or beg them later"
+    }
+  ]
+}

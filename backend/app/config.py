@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     supabase_jwks_url: str | None = None
     gemini_api_key: str
     gemini_model: str = "gemini-3.5-flash-lite"
+    gemini_timeout_ms: int = 30000
     cors_origins: str = "http://localhost:3000"
     frontend_base_url: str = "http://localhost:3000"
 

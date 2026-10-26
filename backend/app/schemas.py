@@ -2,7 +2,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-SessionStatus = Literal["intake", "joint_review", "resolved", "halted"]
+SessionStatus = Literal["intake", "building_joint", "joint_review", "resolved", "halted"]
 Party = Literal["user_a", "user_b", "ai"]
 
 
@@ -24,6 +24,11 @@ class SessionOut(BaseModel):
     party: Literal["user_a", "user_b"]
     invite_link: str | None = None
     halted_reason: str | None = None
+    # "self": this party triggered the halt and sees support resources.
+    # "other": a neutral pause message with no reason.
+    halt_view: Literal["self", "other"] | None = None
+    halt_message: str | None = None
+    helplines: list[str] = Field(default_factory=list)
 
 
 class MessageOut(BaseModel):

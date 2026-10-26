@@ -1,4 +1,4 @@
-export type SessionStatus = "intake" | "joint_review" | "resolved" | "halted";
+export type SessionStatus = "intake" | "building_joint" | "joint_review" | "resolved" | "halted";
 export type Party = "user_a" | "user_b" | "ai";
 
 export type Session = {
@@ -11,6 +11,9 @@ export type Session = {
   party: "user_a" | "user_b";
   invite_link: string | null;
   halted_reason: string | null;
+  halt_view: "self" | "other" | null;
+  halt_message: string | null;
+  helplines: string[];
 };
 
 export type ChatMessage = {
