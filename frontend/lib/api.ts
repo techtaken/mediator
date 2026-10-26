@@ -1,16 +1,26 @@
-import type { ChatMessage, IdeaResponse, JointState, JointSummary, Session, ShareDraft } from "./types";
+import type { ChatMessage, IdeaResponse, JointState, JointSummary, RoomSummary, Session, ShareDraft } from "./types";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 const TOKEN_KEY = (sessionId: string) => `mediator_invite_${sessionId}`;
 
+// Kept in localStorage so the invited person can come back on the same device
+// (closing the tab, or WhatsApp's in-app browser, used to lose access).
 export function saveInviteToken(sessionId: string, token: string) {
-  sessionStorage.setItem(TOKEN_KEY(sessionId), token);
+  try {
+    localStorage.setItem(TOKEN_KEY(sessionId), token);
+  } catch {
+    sessionStorage.setItem(TOKEN_KEY(sessionId), token);
+  }
 }
 
 export function getInviteToken(sessionId: string) {
   if (typeof window === "undefined") return null;
-  return sessionStorage.getItem(TOKEN_KEY(sessionId));
+  try {
+    return localStorage.getItem(TOKEN_KEY(sessionId)) ?? sessionStorage.getItem(TOKEN_KEY(sessionId));
+  } catch {
+    return sessionStorage.getItem(TOKEN_KEY(sessionId));
+  }
 }
 
 export async function request<T>(
@@ -49,6 +59,24 @@ export function createSession(topic: string, context: string, accessToken: strin
     accessToken,
     body: JSON.stringify({ topic, relationship_context: context }),
   });
+}
+
+export function fetchMyRooms(accessToken: string) {
+  return request<RoomSummary[]>("/api/sessions", { accessToken });
+}
+
+export function acceptConsent(id: string, auth: AuthOpts) {
+  return request<Session>(`/api/sessions/${id}/consent`, { method: "POST", ...auth });
+}
+
+/** Stop the room for both people. */
+export function leaveSession(id: string, auth: AuthOpts) {
+  return request<Session>(`/api/sessions/${id}/leave`, { method: "POST", ...auth });
+}
+
+/** Pause the room and flag it for the Mediator team. */
+export function askForPerson(id: string, auth: AuthOpts) {
+  return request<Session>(`/api/sessions/${id}/human`, { method: "POST", ...auth });
 }
 
 export function fetchSession(id: string, auth: AuthOpts) {

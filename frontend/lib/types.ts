@@ -16,6 +16,16 @@ export type Session = {
   halt_message: string | null;
   helplines: string[];
   my_share: string | null;
+  i_consented: boolean;
+};
+
+export type RoomSummary = {
+  id: string;
+  status: SessionStatus;
+  topic: string | null;
+  created_at: string;
+  user_a_ready: boolean;
+  user_b_ready: boolean;
 };
 
 export type ShareDraft = {

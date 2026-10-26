@@ -33,6 +33,7 @@ When a room halts, only the party who triggered it sees why, with helplines. The
    - `004_session_topic.sql`: the "what is this about" line Person A writes, shown to Person B
    - `005_share_approval.sql`: each person's draft and approved share, and the joint "where you overlap" note
    - `006_joint_session.sql`: ideas, each person's answers, and the agreement both sign
+   - `007_consent.sql`: each person's "how Mediator works" acceptance, and an index for "Your rooms"
 4. Copy keys from **Project Settings → API**:
    - Project URL
    - Publishable key (`sb_publishable_…`) for the browser
@@ -88,10 +89,12 @@ cd backend
 1. Sign in as Person A and start a session (optional relationship context).
 2. Copy the invite or share via WhatsApp.
 3. Open the invite in a private window as Person B (no login).
-4. Each person talks in their private chat, then taps **I'm ready to share**. The mediator drafts a short summary of their side from their own chat; they edit it and approve the exact words the other person will read. Approved text is safety-checked before it is released.
+4. Before their first message, each person reads a short "How Mediator works" card (AI, privacy, the team can see rooms, stop anytime, not for emergencies) and accepts it. Each person talks in their private chat, then taps **I'm ready to share**. The mediator drafts a short summary of their side from their own chat; they edit it and approve the exact words the other person will read. Approved text is safety-checked before it is released.
 5. When both have shared, the joint view shows each side in its own approved words, a "where you overlap" note, and ideas drawn only from those two texts. Nothing else from either private chat is shared.
 6. Each person answers every idea privately (*Works for me* / *Needs a change* / *Not for me*) and can suggest their own. You only see the other person's answer once you've given yours. Ideas both accept become agreed.
 7. Either person drafts the agreement: the agreed ideas word for word, plus a neutral summary and notes on anything vague. Changing an answer clears an unsigned draft. The room is resolved only when **both** sign the same version.
+
+Either person can use **Options → Leave this session** or **Talk to a person** at any time. Both pause the room; only the person who stopped it sees why, and a *Talk to a person* request shows up as a `referral` in the admin portal. Signed-in people see **Your rooms** on the home page; invited people's links are remembered on their device.
 
 Crisis / severe-harm phrases halt the room. The person who wrote them sees Indian helpline numbers (the single list lives in `backend/app/safety.py`; re-verify it before any public launch). The other person only sees that the session is paused.
 

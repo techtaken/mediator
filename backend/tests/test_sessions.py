@@ -66,6 +66,8 @@ def agents():
 
 def _session(db, **overrides):
     state = overrides.pop("mediation_state", None) or new_shared_state("sess_abc")
+    overrides.setdefault("consented_a_at", "2026-06-01T00:00:00Z")
+    overrides.setdefault("consented_b_at", "2026-06-01T00:00:00Z")
     return db.add_session(mediation_state=state, **overrides)
 
 
@@ -304,7 +306,9 @@ def test_both_approving_builds_joint_view_from_their_exact_words(db, as_party, a
     _session(db)
     _approve(as_party, "user_a", A_TEXT)
     response = _approve(as_party, "user_b", B_TEXT)
-    assert response.json()["status"] == "joint_review"
+    # The share returns straight away; the joint view is built in the background.
+    assert response.json()["status"] == "building_joint"
+    assert db.rows("sessions")[0]["status"] == "joint_review"
     summary = client.get("/api/sessions/sess_abc/summary").json()
     assert summary["user_a_perspective"] == A_TEXT
     assert summary["user_b_perspective"] == B_TEXT
@@ -389,10 +393,13 @@ def test_joint_build_failure_reopens_intake(db, as_party, agents):
         # The share still went through; only the joint build failed.
         assert response.status_code == 200 and response.json()["user_b_ready"] is True
         assert db.rows("sessions")[0]["status"] == "intake"
-        assert client.post("/api/sessions/sess_abc/joint").status_code == 502
+        # A retry that fails again also leaves the room open for another try.
+        assert client.post("/api/sessions/sess_abc/joint").status_code == 200
+        assert db.rows("sessions")[0]["status"] == "intake"
 
     retry = client.post("/api/sessions/sess_abc/joint")
-    assert retry.status_code == 200 and retry.json()["status"] == "joint_review"
+    assert retry.status_code == 200 and retry.json()["status"] == "building_joint"
+    assert db.rows("sessions")[0]["status"] == "joint_review"
 
 
 def test_joint_view_is_built_only_once(db, as_party, agents):
@@ -408,3 +415,66 @@ def test_messages_rejected_after_intake(db, as_party):
     _session(db, status="building_joint")
     response = client.post("/api/sessions/sess_abc/messages", json={"content": "Hello"})
     assert response.status_code == 409
+
+
+# --- Consent ------------------------------------------------------------------
+
+
+def test_nobody_can_talk_or_share_before_accepting(db, as_party, agents):
+    _session(db, consented_a_at=None)
+    assert client.post("/api/sessions/sess_abc/messages", json={"content": "hi"}).status_code == 409
+    assert client.post("/api/sessions/sess_abc/share/draft").status_code == 409
+    assert _approve(as_party, "user_a", A_TEXT).status_code == 409
+    assert client.get("/api/sessions/sess_abc").json()["i_consented"] is False
+
+    accepted = client.post("/api/sessions/sess_abc/consent").json()
+    assert accepted["i_consented"] is True
+    assert client.post("/api/sessions/sess_abc/messages", json={"content": "hi"}).status_code == 200
+
+
+def test_consent_is_per_person_and_kept(db, as_party):
+    _session(db, consented_a_at=None, consented_b_at=None)
+    client.post("/api/sessions/sess_abc/consent")
+    first = db.rows("sessions")[0]["consented_a_at"]
+    client.post("/api/sessions/sess_abc/consent")
+    assert db.rows("sessions")[0]["consented_a_at"] == first
+    as_party("user_b")
+    assert client.get("/api/sessions/sess_abc").json()["i_consented"] is False
+
+
+# --- Leaving and asking for a person -------------------------------------------
+
+
+@pytest.mark.parametrize("path, kind", [("leave", "withdrawn"), ("human", "referral")])
+def test_stopping_pauses_for_both_and_only_the_stopper_sees_why(db, as_party, path, kind):
+    _session(db)
+    as_party("user_b")
+    mine = client.post(f"/api/sessions/sess_abc/{path}").json()
+    assert mine["status"] == "halted" and mine["halt_view"] == "self" and mine["halted_reason"] == kind
+    session = db.rows("sessions")[0]
+    assert session["halted_for"] == "user_b" and session["halt_kind"] == kind
+    assert any(e["agent"] == kind.upper() for e in db.rows("mediation_audit_events"))
+
+    as_party("user_a")
+    theirs = client.get("/api/sessions/sess_abc").json()
+    assert theirs["halt_view"] == "other" and theirs["halted_reason"] is None and theirs["helplines"] == []
+    assert client.post("/api/sessions/sess_abc/messages", json={"content": "hello?"}).status_code == 409
+
+
+def test_can_stop_during_the_joint_session_but_not_after_it_ends(db, as_party):
+    _session(db, status="joint_review")
+    assert client.post("/api/sessions/sess_abc/leave").status_code == 200
+    db.rows("sessions")[0]["status"] = "resolved"
+    assert client.post("/api/sessions/sess_abc/human").status_code == 409
+
+
+# --- My rooms -----------------------------------------------------------------
+
+
+def test_my_rooms_lists_only_my_rooms_newest_first(db, as_party):
+    db.add_session(id="old", created_by="user_123", topic="Old", created_at="2026-01-01T00:00:00Z")
+    db.add_session(id="new", created_by="user_123", topic="New", created_at="2026-02-01T00:00:00Z")
+    db.add_session(id="other", created_by="someone_else", topic="Not mine")
+    rooms = client.get("/api/sessions").json()
+    assert [room["id"] for room in rooms] == ["new", "old"]
+    assert "invite_token_b" not in rooms[0] and "mediation_state" not in rooms[0]

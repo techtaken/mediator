@@ -1,12 +1,13 @@
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
 
 from datetime import datetime, timezone
 
 from app.agents.pipeline import check_share, draft_share, handle_party_turn, run_joint_pipeline, share_severity
 from app.agents.state import (
+    append_audit,
     joint_blocked_by,
     new_shared_state,
     party_code,
@@ -23,7 +24,7 @@ from app.agents.store import (
     state_version,
 )
 from app.auth import Actor, load_session, require_logged_in, resolve_actor
-from app.joint_store import seed_ideas
+from app.joint_store import now_iso, seed_ideas
 from app.config import get_settings
 from app.db import get_supabase
 from app.safety import HELP_MESSAGE, HELPLINES, PAUSED_FOR_OTHER_MESSAGE, is_crisis_or_severe_harm, with_helplines
@@ -33,6 +34,7 @@ from app.schemas import (
     JointSummaryOut,
     MessageOut,
     ReadyBody,
+    RoomSummaryOut,
     SendMessageBody,
     SessionOut,
     ShareOut,
@@ -120,7 +122,17 @@ def _session_out(session: dict, actor: Actor) -> SessionOut:
         halt_message=PAUSED_FOR_OTHER_MESSAGE if halt_view == "other" else None,
         helplines=HELPLINES if halt_view == "self" else [],
         my_share=_get_share(session["id"], actor.party).get("approved_text"),
+        i_consented=bool(session.get(_consent_field(actor.party))),
     )
+
+
+def _consent_field(party_role: str) -> str:
+    return "consented_a_at" if party_role == "user_a" else "consented_b_at"
+
+
+def _require_consent(session: dict, actor: Actor) -> None:
+    if not session.get(_consent_field(actor.party)):
+        raise HTTPException(status_code=409, detail="Please read how Mediator works and accept it first.")
 
 
 def _get_share(session_id: str, party_role: str) -> dict:
@@ -215,34 +227,37 @@ def _insert_message(
     return result.data[0]
 
 
-def _maybe_build_summary(session: dict) -> None:
+def _claim_joint(session: dict) -> dict | None:
+    """Atomically move a ready room to building_joint. Returns the claimed row,
+    or None if it isn't ready or another request already claimed it."""
     if session["status"] != "intake":
-        return
+        return None
     if not (session["user_a_ready"] and session["user_b_ready"]):
-        return
+        return None
     state = load_state(session)
     if joint_blocked_by(state):
-        return
+        return None
     shares = state.get("approved_shares") or {}
     if not (shares.get("A") and shares.get("B")):
-        return
-
-    sid = session["id"]
-    supabase = get_supabase()
-    # Claim the build atomically: only one of two simultaneous "ready" calls wins.
+        return None
     claimed = (
-        supabase.table("sessions")
+        get_supabase()
+        .table("sessions")
         .update({"status": "building_joint"})
-        .eq("id", sid)
+        .eq("id", session["id"])
         .eq("status", "intake")
         .eq("user_a_ready", True)
         .eq("user_b_ready", True)
         .execute()
     )
-    if not claimed.data:
-        return
-    session = claimed.data[0]
+    return claimed.data[0] if claimed.data else None
 
+
+def _build_joint(session: dict) -> bool:
+    """Build the joint view for a claimed room. On failure, reopen the room so
+    the build can be retried. Never raises: it runs as a background task."""
+    sid = session["id"]
+    supabase = get_supabase()
     try:
         built = run_joint_pipeline(state=load_state(session))
         try:
@@ -263,10 +278,17 @@ def _maybe_build_summary(session: dict) -> None:
         ).execute()
         seed_ideas(sid, built["compromises"])
         supabase.table("sessions").update({"status": "joint_review"}).eq("id", sid).execute()
-    except Exception as exc:
+        return True
+    except Exception:
         logger.exception("joint build failed for %s", sid)
         supabase.table("sessions").update({"status": "intake"}).eq("id", sid).eq("status", "building_joint").execute()
-        raise HTTPException(status_code=502, detail="Could not prepare the joint view. Please try again.") from exc
+        return False
+
+
+def _maybe_build_summary(session: dict) -> bool:
+    """Claim and build in one go (used where waiting is fine)."""
+    claimed = _claim_joint(session)
+    return _build_joint(claimed) if claimed else False
 
 
 @router.post("/sessions", response_model=SessionOut)
@@ -350,6 +372,7 @@ def _require_intake(session: dict) -> None:
 def send_message(body: SendMessageBody, ctx: tuple[dict, Actor] = Depends(get_actor)):
     session, actor = ctx
     _require_intake(session)
+    _require_consent(session, actor)
     if session["user_a_ready" if actor.party == "user_a" else "user_b_ready"]:
         raise HTTPException(status_code=409, detail="You've already shared. Withdraw it to keep talking.")
 
@@ -419,6 +442,7 @@ def draft_my_share(ctx: tuple[dict, Actor] = Depends(get_actor)):
     """Draft what the other person would see, from this party's own chat only."""
     session, actor = ctx
     _require_intake(session)
+    _require_consent(session, actor)
     existing = _get_share(session["id"], actor.party)
     if existing.get("approved_text"):
         raise HTTPException(status_code=409, detail=ALREADY_SHARED_DETAIL)
@@ -446,13 +470,18 @@ def draft_my_share(ctx: tuple[dict, Actor] = Depends(get_actor)):
 
 
 @router.post("/sessions/{session_id}/share/approve", response_model=SessionOut)
-def approve_my_share(body: ApproveShareBody, ctx: tuple[dict, Actor] = Depends(get_actor)):
+def approve_my_share(
+    body: ApproveShareBody,
+    background: BackgroundTasks,
+    ctx: tuple[dict, Actor] = Depends(get_actor),
+):
     """Approve the exact text the other person will see, and mark this party ready.
 
     The text is safety-checked first. If that check can't run, nothing is shared.
     """
     session, actor = ctx
     _require_intake(session)
+    _require_consent(session, actor)
     if _get_share(session["id"], actor.party).get("approved_text"):
         raise HTTPException(status_code=409, detail=ALREADY_SHARED_DETAIL)
     code = party_code(actor.party)
@@ -494,22 +523,76 @@ def approve_my_share(body: ApproveShareBody, ctx: tuple[dict, Actor] = Depends(g
     updated = get_supabase().table("sessions").update({field: True}).eq("id", session["id"]).execute()
     if not updated.data:
         raise HTTPException(status_code=500, detail="Could not update ready state")
-    try:
-        _maybe_build_summary(updated.data[0])
-    except HTTPException:
-        # The share is saved and this party is ready. The joint view can be
-        # retried from the waiting screen via POST /joint.
-        pass
+    # If both have now shared, build the joint view after responding so this
+    # person isn't kept waiting on several model calls. Failures reopen the
+    # room, and the waiting screen can retry via POST /joint.
+    claimed = _claim_joint(updated.data[0])
+    if claimed:
+        background.add_task(_build_joint, claimed)
     return _session_out(load_session(session["id"]), actor)
 
 
 @router.post("/sessions/{session_id}/joint", response_model=SessionOut)
-def build_joint(ctx: tuple[dict, Actor] = Depends(get_actor)):
+def build_joint(background: BackgroundTasks, ctx: tuple[dict, Actor] = Depends(get_actor)):
     """Retry building the joint view once both parties have shared."""
     session, actor = ctx
-    if session["status"] == "intake":
-        _maybe_build_summary(session)
+    claimed = _claim_joint(session)
+    if claimed:
+        background.add_task(_build_joint, claimed)
     return _session_out(load_session(session["id"]), actor)
+
+
+@router.get("/sessions", response_model=list[RoomSummaryOut])
+def my_rooms(user_id: str = Depends(require_logged_in)):
+    """Rooms the signed-in person opened, newest first."""
+    rows = (
+        get_supabase()
+        .table("sessions")
+        .select("id, status, topic, created_at, user_a_ready, user_b_ready")
+        .eq("created_by", user_id)
+        .order("created_at", desc=True)
+        .limit(50)
+        .execute()
+        .data
+        or []
+    )
+    return [RoomSummaryOut(**row) for row in rows]
+
+
+@router.post("/sessions/{session_id}/consent", response_model=SessionOut)
+def accept_terms(ctx: tuple[dict, Actor] = Depends(get_actor)):
+    """Record that this party read and accepted how Mediator works."""
+    session, actor = ctx
+    field = _consent_field(actor.party)
+    if not session.get(field):
+        get_supabase().table("sessions").update({field: now_iso()}).eq("id", session["id"]).execute()
+    return _session_out(load_session(session["id"]), actor)
+
+
+STOPPABLE = ("intake", "building_joint", "joint_review")
+
+
+def _stop(session: dict, actor: Actor, kind: str, reason: str) -> SessionOut:
+    """Stop the room for both people. Only the person who stopped it sees why."""
+    if session["status"] not in STOPPABLE:
+        raise HTTPException(status_code=409, detail="This session has already ended.")
+    _update_state(session, lambda state: append_audit(state, {"stage": state.get("stage"), "agent": kind.upper(), "reason": reason}))
+    _halt(session["id"], actor.party, kind)
+    return _session_out(load_session(session["id"]), actor)
+
+
+@router.post("/sessions/{session_id}/leave", response_model=SessionOut)
+def leave_session(ctx: tuple[dict, Actor] = Depends(get_actor)):
+    """Either person can stop at any time (R2: participation is voluntary)."""
+    session, actor = ctx
+    return _stop(session, actor, "withdrawn", f"{actor.party} left the session")
+
+
+@router.post("/sessions/{session_id}/human", response_model=SessionOut)
+def ask_for_a_person(ctx: tuple[dict, Actor] = Depends(get_actor)):
+    """Pause the room and flag it for the Mediator team (shown as a referral in admin)."""
+    session, actor = ctx
+    return _stop(session, actor, "referral", f"{actor.party} asked to talk to a person")
 
 
 @router.get("/sessions/{session_id}/summary", response_model=JointSummaryOut)

@@ -39,6 +39,17 @@ class SessionOut(BaseModel):
     helplines: list[str] = Field(default_factory=list)
     # This party's own approved text, if they have shared. Never the other party's.
     my_share: str | None = None
+    # Whether this party has accepted how Mediator works. Required before chatting.
+    i_consented: bool = False
+
+
+class RoomSummaryOut(BaseModel):
+    id: str
+    status: SessionStatus
+    topic: str | None = None
+    created_at: str
+    user_a_ready: bool
+    user_b_ready: bool
 
 
 class MessageOut(BaseModel):

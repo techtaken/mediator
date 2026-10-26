@@ -3,17 +3,22 @@
 import Link from "next/link";
 import { FormEvent, use, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Chat } from "@/components/room/Chat";
+import { ConsentCard } from "@/components/room/ConsentCard";
 import { HaltPanel } from "@/components/room/HaltPanel";
 import { JointView } from "@/components/room/JointView";
+import { RoomMenu } from "@/components/room/RoomMenu";
 import { ShareReview } from "@/components/room/ShareReview";
 import { Steps } from "@/components/room/Steps";
 import { WaitingPanel } from "@/components/room/WaitingPanel";
 import {
+  acceptConsent,
+  askForPerson,
   fetchJoint,
   fetchMessages,
   fetchSession,
   fetchSummary,
   getInviteToken,
+  leaveSession,
   retryJoint,
   sendMessage,
   withdrawShare,
@@ -164,7 +169,9 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
   const isA = session?.party === "user_a";
   const otherReady = isA ? session?.user_b_ready : session?.user_a_ready;
   const hasSpoken = messages.some((m) => m.sender_role === session?.party);
-  const showChat = session?.status === "intake" && !session.my_share;
+  const needsConsent = session?.status === "intake" && !session.i_consented;
+  const showChat = session?.status === "intake" && !session.my_share && !needsConsent;
+  const canStop = session ? ["intake", "building_joint", "joint_review"].includes(session.status) : false;
   // The server saves the person's message before the mediator replies, so a
   // poll during that wait can already return it. Only show the local
   // placeholder until the saved copy arrives, or it appears twice.
@@ -190,6 +197,8 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     body = <p className="flex-1 px-4 py-8 text-muted">{error || "Opening your room…"}</p>;
   } else if (session.status === "halted") {
     body = <HaltPanel session={session} />;
+  } else if (needsConsent) {
+    body = <ConsentCard onAccept={() => run(() => acceptConsent(id, auth))} />;
   } else if (session.status !== "intake") {
     body = (
       <JointView
@@ -224,7 +233,14 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
           <Link href="/" className="text-xs tracking-[0.2em] text-terracotta uppercase">
             Mediator
           </Link>
-          <p className="text-xs text-muted">{isA ? "Your private room" : "Invited · private room"}</p>
+          <div className="flex items-center gap-2">
+            <p className="text-xs text-muted">{isA ? "Your private room" : "Invited · private room"}</p>
+            {canStop ? (
+              <RoomMenu
+                onAction={(action) => run(() => (action === "leave" ? leaveSession(id, auth) : askForPerson(id, auth)))}
+              />
+            ) : null}
+          </div>
         </div>
         {session?.status !== "halted" ? <Steps current={currentStep(session, reviewing)} /> : null}
         {session?.topic ? (

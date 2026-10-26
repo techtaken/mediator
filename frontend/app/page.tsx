@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
+import { YourRooms } from "@/components/YourRooms";
 import { createSession } from "@/lib/api";
 import { getSupabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/useAuth";
@@ -128,6 +129,8 @@ export default function HomePage() {
           Sign in to start a session
         </Link>
       )}
+
+      {accessToken ? <YourRooms accessToken={accessToken} /> : null}
 
       <p className="mt-8 text-xs leading-relaxed text-muted">
         Not for crisis, violence, or legal advice. If you are in danger, call 112.
