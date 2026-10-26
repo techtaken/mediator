@@ -7,10 +7,10 @@ from typing import Any, Callable
 from app.agents.llm import AgentCaller, call_agent, dumps
 from app.agents.state import (
     PartyKey,
-    append_approved_share,
     append_audit,
     apply_caucus_updates,
     normalize_private,
+    party_view,
     record_safety_flag,
     shared_view,
 )
@@ -20,18 +20,16 @@ logger = logging.getLogger(__name__)
 
 INTERNAL_AGENTS = {"DIAGNOSTICIAN", "OPTIONS", "REALITY_TESTER", "DRAFTER"}
 HANDOFF_AGENTS = {"HUMAN", "HANDOFF"}
-MAX_INTERNAL_HOPS = 4
+STAGES = {
+    "INTAKE", "CONSENT", "STORYTELLING", "SHARE_CONSENT", "DIAGNOSIS", "RECOGNITION",
+    "ESTABLISH_FACTS", "NEGOTIATE", "REALITY_TEST", "DRAFT_AGREEMENT", "FOLLOW_UP",
+    "DE_ESCALATE", "BUILD_READINESS", "HALT_AND_REFER", "REFER_TO_HUMAN",
+}
 
 # Sent when no draft survives the outbound checks. Deliberately content-free.
 NEUTRAL_FALLBACK = "Thank you for telling me. Take your time. What feels most important to you right now?"
 # Sent when the caucus agent itself fails.
 CAUCUS_FALLBACK = "I heard you. Say a little more about what you need to feel this is resolved."
-
-DEFAULT_COMPROMISES = (
-    "Write a weekly check-in of 15 minutes that both of you can keep.",
-    "Handle money and visiting decisions in a shared note, not through relatives.",
-    "Agree one pause word either of you can use when the talk gets sharp.",
-)
 
 CARE_NOTES = {
     1: "Go gently. Check that they are choosing freely to continue, and keep the pace slow.",
@@ -64,6 +62,29 @@ def _safety_unavailable() -> dict[str, Any]:
         "message_to_affected_party": None,
         "block_outgoing_message": False,
     }
+
+
+def topic_for(party: PartyKey, topic: str | None) -> str:
+    """The dispute topic, framed for this party's caucus.
+
+    Written out with explicit roles so the model never has to work out who
+    said what. Without this it once told B "your sibling is planning a trip
+    without you" when A had said B went on a trip without A.
+    """
+    text = (topic or "").strip()
+    if not text:
+        return "Not given."
+    if party == "A":
+        return (
+            f'The person you are talking to (A) opened this room and described it as: "{text}". '
+            "B has been shown this line as A's description."
+        )
+    return (
+        f'The OTHER person (A) opened this room and described it as: "{text}". '
+        "The person you are talking to (B) did not write this. It is A's account, not a fact. "
+        'Any "I", "me" or "my" in it means A, and any "you" in it means B. '
+        'When you mention it, attribute it ("the other person says...") and invite B\'s own side.'
+    )
 
 
 def _default_plan(party: PartyKey) -> dict[str, Any]:
@@ -99,6 +120,7 @@ def handle_party_turn(
     state: dict[str, Any],
     private: dict[str, Any] | str | None,
     relationship_context: str = "",
+    topic: str | None = None,
     caller: AgentCaller = call_agent,
 ) -> TurnResult:
     """One private-intake turn. The reply always goes back to `party`."""
@@ -110,7 +132,7 @@ def handle_party_turn(
         append_audit(state, {"stage": "HALT_AND_REFER", "agent": "KEYWORD_SAFETY", "gate": 1, "reason": "keyword"})
         return TurnResult(reply=HELP_MESSAGE, halt=True, halt_kind="safety", state=state, agent="SAFETY_GUARDIAN")
 
-    view = shared_view(state)
+    view = party_view(state, party)
     try:
         safety = caller(
             "SAFETY_GUARDIAN",
@@ -141,12 +163,13 @@ def handle_party_turn(
     instruction = " ".join(part for part in (care, str(plan.get("instructions_to_agent") or "")) if part)
     mapping = {
         "PARTY_ID": party,
-        "SHARED_STATE_JSON": dumps(shared_view(state)),
+        "SHARED_STATE_JSON": dumps(party_view(state, party)),
         # Confidentiality in code: only the speaking party's own memory is ever passed.
         "PRIVATE_MEMORY": dumps(private),
         "LATEST_EVENT": dumps({"party": party, "message": message}),
         "INSTRUCTION": instruction,
         "RELATIONSHIP_CONTEXT": relationship_context or "",
+        "DISPUTE_TOPIC": topic_for(party, topic),
     }
 
     try:
@@ -170,9 +193,9 @@ def handle_party_turn(
         party,
         caller,
         regenerate,
+        view=party_view(state, party),
     )
     apply_caucus_updates(state, private, party, caucus.get("state_updates") or {})
-    append_approved_share(state, party, caucus.get("share_proposal"))
     if caucus.get("private_notes"):
         private["notes"] = str(caucus["private_notes"])
     turns = state.setdefault("signals", {}).setdefault("turns", {"A": 0, "B": 0})
@@ -193,48 +216,47 @@ def _plan_turn(
     safety: dict[str, Any],
     caller: AgentCaller,
 ) -> dict[str, Any]:
-    """Ask the orchestrator for the next agent, running internal agents in between.
+    """Ask the orchestrator where this private turn goes.
 
-    During private intake the only party-facing agent allowed is the speaking
-    party's own caucus. Anything else the orchestrator picks is coerced.
+    During private intake the only agents allowed are the speaking party's own
+    caucus and the human handoff. Internal agents (diagnosis, options, ...) wait
+    for the joint stage: their output lands in shared state, so running them on
+    one party's private turn would carry that party's words to the other side.
     """
-    allowed = {f"CAUCUS_{party}"} | INTERNAL_AGENTS | HANDOFF_AGENTS
-    plan = _default_plan(party)
-    for hop in range(MAX_INTERNAL_HOPS + 1):
-        try:
-            plan = caller(
-                "ORCHESTRATOR",
-                {
-                    "SHARED_STATE_JSON": dumps(shared_view(state)),
-                    "LATEST_EVENT": dumps({"party": party, "message": message}),
-                    "SAFETY_REPORT": dumps(safety),
-                },
-            )
-        except Exception:
-            logger.exception("orchestrator failed; defaulting to caucus")
-            plan = _default_plan(party)
-
-        requested = str(plan.get("next_agent") or "")
-        next_agent = requested if requested in allowed else f"CAUCUS_{party}"
-        if next_agent in INTERNAL_AGENTS and hop == MAX_INTERNAL_HOPS:
-            next_agent = f"CAUCUS_{party}"
-        plan["next_agent"] = next_agent
-
-        state["stage"] = plan.get("stage") or state.get("stage")
-        state["mode"] = "private"
-        append_audit(
-            state,
+    allowed = {f"CAUCUS_{party}"} | HANDOFF_AGENTS
+    try:
+        plan = caller(
+            "ORCHESTRATOR",
             {
-                "stage": plan.get("stage"),
-                "agent": next_agent,
-                "gate": plan.get("gate_triggered"),
-                "reason": plan.get("reason"),
-                **({"requested_agent": requested, "coerced": True} if requested != next_agent else {}),
+                "SHARED_STATE_JSON": dumps(party_view(state, party)),
+                "LATEST_EVENT": dumps({"party": party, "message": message}),
+                "SAFETY_REPORT": dumps(safety),
             },
         )
-        if next_agent not in INTERNAL_AGENTS:
-            return plan
-        _run_internal(next_agent, state, plan, party, caller)
+    except Exception:
+        logger.exception("orchestrator failed; defaulting to caucus")
+        plan = _default_plan(party)
+
+    requested = str(plan.get("next_agent") or "")
+    next_agent = requested if requested in allowed else f"CAUCUS_{party}"
+    plan["next_agent"] = next_agent
+    # The stage is stored in shared state, so only accept a known label: free
+    # text from a model that just read this party's message must not persist.
+    stage = str(plan.get("stage") or "")
+    plan["stage"] = stage if stage in STAGES else "STORYTELLING"
+
+    state["stage"] = plan["stage"]
+    state["mode"] = "private"
+    append_audit(
+        state,
+        {
+            "stage": plan["stage"],
+            "agent": next_agent,
+            "gate": plan.get("gate_triggered"),
+            "reason": plan.get("reason"),
+            **({"requested_agent": requested, "coerced": True} if requested != next_agent else {}),
+        },
+    )
     return plan
 
 
@@ -272,7 +294,7 @@ def _handoff(state: dict[str, Any], party: PartyKey, plan: dict[str, Any], calle
     try:
         handoff = caller(
             "HANDOFF",
-            {"SHARED_STATE_JSON": dumps(shared_view(state)), "REASON": str(plan.get("reason") or "human referral")},
+            {"SHARED_STATE_JSON": dumps(party_view(state, party)), "REASON": str(plan.get("reason") or "human referral")},
         )
     except Exception:
         logger.exception("handoff packager failed")
@@ -336,33 +358,40 @@ def _run_internal(
     return state
 
 
-def _run_joint_voice(
-    state: dict[str, Any],
-    plan: dict[str, Any],
-    caller: AgentCaller,
-) -> tuple[str, dict[str, Any]]:
+def _common_ground(state: dict[str, Any], caller: AgentCaller) -> str | None:
+    """A short "where you overlap" note over the two approved texts, or None."""
     view = shared_view(state)
+    plan = {"stage": "RECOGNITION", "mode": "joint"}
     mapping = {
         "SHARED_STATE_JSON": dumps(view),
-        "FOCUS": str(plan.get("focus") or ""),
-        "INSTRUCTION": str(plan.get("instructions_to_agent") or ""),
+        "FOCUS": "",
+        "INSTRUCTION": "Name what both approved texts have in common.",
         "APPROVED_SHARES": dumps(view.get("approved_shares") or {}),
     }
     try:
         result = caller("JOINT_VOICE", mapping)
     except Exception:
         logger.exception("joint voice failed")
-        result = {"message": "Here is a joint reading of what both of you have agreed to share."}
+        return None
+    draft = str(result.get("message") or "").strip()
+    if not draft:
+        return None
 
     def regenerate(feedback: str) -> str:
         retry = caller("JOINT_VOICE", {**mapping, "INSTRUCTION": f"{mapping['INSTRUCTION']}\nREWRITE: {feedback}"})
         return str(retry.get("message") or "")
 
-    draft = _guard_outgoing(str(result.get("message") or "").strip(), state, plan, "both", caller, regenerate)
-    return draft, result
+    final = _guard_outgoing(draft, state, plan, "both", caller, regenerate)
+    return None if final == NEUTRAL_FALLBACK else final
 
 
-def _check_outbound(draft: str, state: dict[str, Any], recipient: str, caller: AgentCaller) -> tuple[bool | None, str]:
+def _check_outbound(
+    draft: str,
+    state: dict[str, Any],
+    recipient: str,
+    caller: AgentCaller,
+    view: dict[str, Any] | None = None,
+) -> tuple[bool | None, str]:
     """Return (blocked, feedback). blocked is None when the check itself failed."""
     if is_crisis_or_severe_harm(draft):
         return True, "Do not repeat crisis or violence wording; respond with care in neutral words."
@@ -370,7 +399,7 @@ def _check_outbound(draft: str, state: dict[str, Any], recipient: str, caller: A
         out_safety = caller(
             "SAFETY_GUARDIAN",
             {
-                "SHARED_STATE_JSON": dumps(shared_view(state)),
+                "SHARED_STATE_JSON": dumps(view if view is not None else shared_view(state)),
                 "LATEST_EVENT": dumps({"direction": "outbound", "draft": draft, "recipient": recipient}),
             },
         )
@@ -389,6 +418,7 @@ def _guard_outgoing(
     recipient: str,
     caller: AgentCaller,
     regenerate: Callable[[str], str] | None = None,
+    view: dict[str, Any] | None = None,
 ) -> str:
     """Outbound safety + neutrality checks.
 
@@ -400,7 +430,8 @@ def _guard_outgoing(
     if not draft:
         draft = "I am here. Tell me what matters most."
 
-    blocked, feedback = _check_outbound(draft, state, recipient, caller)
+    view = view if view is not None else shared_view(state)
+    blocked, feedback = _check_outbound(draft, state, recipient, caller, view)
     if blocked and regenerate is not None:
         try:
             retry = regenerate(feedback).strip()
@@ -409,13 +440,12 @@ def _guard_outgoing(
             retry = ""
         if retry:
             draft = retry
-            blocked, feedback = _check_outbound(draft, state, recipient, caller)
+            blocked, feedback = _check_outbound(draft, state, recipient, caller, view)
     if blocked:
         append_audit(state, {"stage": state.get("stage"), "agent": "SAFETY_GUARDIAN", "reason": f"outbound blocked: {feedback}"})
         return NEUTRAL_FALLBACK
     safety_ran = blocked is not None
 
-    view = shared_view(state)
     try:
         audit = caller(
             "NEUTRALITY_AUDITOR",
@@ -445,13 +475,99 @@ def _guard_outgoing(
     return final or draft
 
 
-def _perspective(result: dict[str, Any], key: str, shares: list[str], label: str) -> str:
-    text = str(result.get(key) or "").strip()
-    if text:
-        return text
-    if shares:
-        return " ".join(shares)
-    return f"{label} has not chosen anything to share yet."
+OPTION_TEXT_KEYS = ("description", "text", "option", "summary")
+
+
+def _option_texts(options: dict[str, Any]) -> list[str]:
+    texts = []
+    for item in options.get("options") or []:
+        if isinstance(item, str) and item.strip():
+            texts.append(item.strip())
+        elif isinstance(item, dict):
+            text = next((str(item[key]).strip() for key in OPTION_TEXT_KEYS if item.get(key)), "")
+            if text:
+                texts.append(text)
+    return texts
+
+
+def draft_share(
+    *,
+    party: PartyKey,
+    transcript: str,
+    private: dict[str, Any] | str | None,
+    topic: str | None,
+    state: dict[str, Any],
+    caller: AgentCaller = call_agent,
+) -> dict[str, Any] | None:
+    """Draft the text the other party would see about this party's side.
+
+    Uses only this party's own transcript and memory. The draft is checked like
+    any outgoing message; if no safe draft comes back, returns None and the
+    person writes their own.
+    """
+    mapping = {
+        "PARTY_ID": party,
+        "DISPUTE_TOPIC": topic_for(party, topic),
+        "TRANSCRIPT": transcript or "(no messages)",
+        "PRIVATE_MEMORY": dumps(normalize_private(private)),
+    }
+    try:
+        result = caller("SHARE_DRAFTER", mapping)
+    except Exception:
+        logger.exception("share drafter failed")
+        return None
+
+    view = party_view(state, party)
+    summary = str(result.get("summary") or "").strip()
+    blocked, feedback = _check_outbound(summary, state, "both", caller, view) if summary else (True, "empty draft")
+    if blocked:
+        try:
+            result = caller("SHARE_DRAFTER", {**mapping, "TRANSCRIPT": f"{mapping['TRANSCRIPT']}\n\nREWRITE: the previous draft was rejected: {feedback}"})
+        except Exception:
+            logger.exception("share drafter retry failed")
+            return None
+        summary = str(result.get("summary") or "").strip()
+        blocked, _ = _check_outbound(summary, state, "both", caller, view) if summary else (True, "")
+    if blocked:
+        append_audit(state, {"stage": "SHARE_CONSENT", "agent": "SHARE_DRAFTER", "reason": "no safe draft"})
+        return None
+    return {"summary": summary[:1200], "left_out": list(result.get("left_out") or [])}
+
+
+def check_share(
+    *,
+    party: PartyKey,
+    text: str,
+    state: dict[str, Any],
+    caller: AgentCaller = call_agent,
+) -> dict[str, Any]:
+    """Safety-check the exact text a party approved before the other party sees it.
+
+    Raises if the check cannot run: approved text is only shared once checked.
+    """
+    if is_crisis_or_severe_harm(text):
+        return {"flag": True, "severity": 3, "action": "HALT_AND_REFER", "categories": ["keyword"]}
+    return caller(
+        "SAFETY_GUARDIAN",
+        {
+            "SHARED_STATE_JSON": dumps(party_view(state, party)),
+            "LATEST_EVENT": dumps(
+                {
+                    "party": party,
+                    "direction": "inbound",
+                    "message": text,
+                    "note": "Text this party approved to show the other party.",
+                }
+            ),
+        },
+    )
+
+
+def share_severity(safety: dict[str, Any]) -> int:
+    """3 = halt, 2 = hold back from joint, 1 = care, 0 = clean."""
+    if _is_halt(safety):
+        return 3
+    return _severity(safety)
 
 
 def run_joint_pipeline(
@@ -459,11 +575,13 @@ def run_joint_pipeline(
     state: dict[str, Any],
     caller: AgentCaller = call_agent,
 ) -> dict[str, Any]:
-    """When both parties are ready: diagnose, generate options, write a joint view.
+    """When both parties have approved what to share, build the joint view.
 
-    Every agent here sees only the shared view: approved shares plus process
-    signals. Private memory is never loaded.
+    Each perspective is that party's own approved text, exactly as they
+    approved it: no model rewrites what the other person reads. The agents add
+    a "where you overlap" note and options drawn only from those two texts.
     """
+    shares = state.get("approved_shares") or {}
     plan = {
         "stage": "DIAGNOSIS",
         "focus": None,
@@ -472,42 +590,22 @@ def run_joint_pipeline(
     }
     _run_internal("DIAGNOSTICIAN", state, plan, "A", caller)
     plan["stage"] = "NEGOTIATE"
-    plan["instructions_to_agent"] = "Generate balanced options from shared interests."
-    _run_internal("OPTIONS", state, plan, "A", caller)
-    message, joint = _run_joint_voice(
-        state,
-        {
-            "stage": "RECOGNITION",
-            "focus": None,
-            "instructions_to_agent": "Present neutralized perspectives and invite recognition.",
-            "mode": "joint",
-        },
-        caller,
+    plan["instructions_to_agent"] = (
+        "Generate 3-5 balanced options from the two approved texts only. "
+        "Each must be specific to this dispute; no generic advice."
     )
-    options = state.get("options") or {}
-    descriptions = []
-    for item in options.get("options") or []:
-        if isinstance(item, dict) and item.get("description"):
-            descriptions.append(str(item["description"]))
-        elif isinstance(item, str):
-            descriptions.append(item)
-    shares = state.get("approved_shares") or {}
-    perspectives = {}
-    for key, code, label in (("user_a_perspective", "A", "Person A"), ("user_b_perspective", "B", "Person B")):
-        party_shares = shares.get(code) or []
-        text = _perspective(joint, key, party_shares, label)
-        if text != " ".join(party_shares) and _check_outbound(text, state, "both", caller)[0]:
-            # A blocked summary falls back to the party's own approved words.
-            text = _perspective({}, key, party_shares, label)
-        perspectives[key] = text
+    _run_internal("OPTIONS", state, plan, "A", caller)
+    common_ground = _common_ground(state, caller)
 
-    compromises = descriptions[:6]
-    if compromises and _check_outbound("\n".join(compromises), state, "both", caller)[0]:
-        append_audit(state, {"stage": "NEGOTIATE", "agent": "SAFETY_GUARDIAN", "reason": "options blocked"})
+    compromises = _option_texts(state.get("options") or {})[:5]
+    if compromises and _check_outbound("\n".join(compromises), state, "both", caller)[0] is not False:
+        # Options reach both people, so they must pass a check that actually ran.
+        append_audit(state, {"stage": "NEGOTIATE", "agent": "SAFETY_GUARDIAN", "reason": "options not cleared"})
         compromises = []
     return {
         "state": state,
-        **perspectives,
-        "compromises": compromises or list(DEFAULT_COMPROMISES),
-        "joint_message": message,
+        "user_a_perspective": " ".join(shares.get("A") or []),
+        "user_b_perspective": " ".join(shares.get("B") or []),
+        "common_ground": common_ground,
+        "compromises": compromises,
     }

@@ -4,6 +4,7 @@ export type Party = "user_a" | "user_b" | "ai";
 export type Session = {
   id: string;
   status: SessionStatus;
+  topic: string | null;
   relationship_context: string | null;
   created_at: string;
   user_a_ready: boolean;
@@ -14,6 +15,14 @@ export type Session = {
   halt_view: "self" | "other" | null;
   halt_message: string | null;
   helplines: string[];
+  my_share: string | null;
+};
+
+export type ShareDraft = {
+  draft: string | null;
+  left_out: string[];
+  approved: string | null;
+  approved_at: string | null;
 };
 
 export type ChatMessage = {
@@ -28,6 +37,7 @@ export type ChatMessage = {
 export type JointSummary = {
   user_a_perspective: string;
   user_b_perspective: string;
+  common_ground: string | null;
   compromises: string[];
   created_at: string;
 };

@@ -26,6 +26,7 @@ def test_caucus_agent_returns_valid_reply():
             "LATEST_EVENT": dumps({"party": "A", "message": "I feel exhausted and ignored when chores are left to me."}),
             "INSTRUCTION": "Listen and reflect.",
             "RELATIONSHIP_CONTEXT": "Partners sharing a home",
+            "DISPUTE_TOPIC": "Not given.",
         },
     )
     assert len(out["reply_to_party"].strip()) > 20

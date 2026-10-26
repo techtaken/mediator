@@ -5,7 +5,10 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.agents.pipeline import check_share as real_check_share
+from app.agents.pipeline import draft_share as real_draft_share
 from app.agents.pipeline import handle_party_turn as real_handle_party_turn
+from app.agents.pipeline import run_joint_pipeline as real_run_joint_pipeline
 from app.agents.state import new_shared_state
 from app.auth import Actor, load_session, require_logged_in
 from app.routers import sessions as sessions_module
@@ -49,7 +52,10 @@ def as_party():
 @pytest.fixture
 def agents():
     fake = FakeAgents()
-    with patch.object(sessions_module, "handle_party_turn", partial(real_handle_party_turn, caller=fake)):
+    with patch.object(sessions_module, "handle_party_turn", partial(real_handle_party_turn, caller=fake)), \
+         patch.object(sessions_module, "draft_share", partial(real_draft_share, caller=fake)), \
+         patch.object(sessions_module, "check_share", partial(real_check_share, caller=fake)), \
+         patch.object(sessions_module, "run_joint_pipeline", partial(real_run_joint_pipeline, caller=fake)):
         yield fake
 
 
@@ -59,7 +65,7 @@ def _session(db, **overrides):
 
 
 def test_create_session_saves_initial_state(db, as_party):
-    response = client.post("/api/sessions", json={"relationship_context": "Roommates"})
+    response = client.post("/api/sessions", json={"topic": "Rent split", "relationship_context": "Roommates"})
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "intake" and data["party"] == "user_a"
@@ -76,6 +82,61 @@ def test_get_session_hides_invite_from_b(db, as_party):
     data = client.get("/api/sessions/sess_abc").json()
     assert data["party"] == "user_b" and data["invite_link"] is None
     assert db.rows("messages", audience_role="user_b")  # welcome message
+
+
+def _open_room_and_join(as_party, db, topic="You went on the Goa trip without me"):
+    client.post("/api/sessions", json={"topic": topic, "relationship_context": "Siblings"})
+    sid = db.rows("sessions")[0]["id"]
+    as_party("user_b")
+    client.get(f"/api/sessions/{sid}")
+    return sid
+
+
+def test_both_welcome_messages_disclose_the_ai_once(db, as_party):
+    # Agents are told not to repeat disclaimers, so the welcome must carry them.
+    _open_room_and_join(as_party, db)
+    for party in ("user_a", "user_b"):
+        (welcome,) = db.rows("messages", audience_role=party)
+        assert "AI mediator" in welcome["content"]
+        assert "legal, medical or financial advice" in welcome["content"]
+        assert "stop at any time" in welcome["content"]
+
+
+def test_b_is_told_who_opened_the_room_and_why(db, as_party):
+    _open_room_and_join(as_party, db)
+    (welcome_b,) = db.rows("messages", audience_role="user_b")
+    assert "The person who invited you can't read it" in welcome_b["content"]
+    assert "They opened this room about" in welcome_b["content"]
+    assert '"You went on the Goa trip without me"' in welcome_b["content"]
+    assert "your side" in welcome_b["content"]
+    (welcome_a,) = db.rows("messages", audience_role="user_a")
+    assert 'You opened this room about: "You went on the Goa trip without me"' in welcome_a["content"]
+
+
+def test_topic_is_returned_to_both_parties(db, as_party):
+    sid = _open_room_and_join(as_party, db)
+    assert client.get(f"/api/sessions/{sid}").json()["topic"] == "You went on the Goa trip without me"
+
+
+@pytest.mark.parametrize("topic", [None, "", "     ", "x" * 301])
+def test_topic_is_required_and_bounded(db, as_party, topic):
+    body = {} if topic is None else {"topic": topic}
+    assert client.post("/api/sessions", json=body).status_code == 422
+    assert db.rows("sessions") == []
+
+
+def test_send_message_passes_topic_to_the_turn(db, as_party):
+    _session(db, topic="You went on the Goa trip without me")
+    seen = {}
+
+    def turn(**kwargs):
+        seen.update(kwargs)
+        return real_handle_party_turn(caller=FakeAgents(), **kwargs)
+
+    as_party("user_b")
+    with patch.object(sessions_module, "handle_party_turn", turn):
+        client.post("/api/sessions/sess_abc/messages", json={"content": "hi"})
+    assert seen["topic"] == "You went on the Goa trip without me"
 
 
 def test_send_message_runs_turn_and_persists_everything(db, as_party, agents):
@@ -188,52 +249,154 @@ def test_private_memory_read_failure_is_reported(db, as_party, agents):
     assert db.rows("sessions")[0]["state_version"] == 0
 
 
-JOINT = {
-    "user_a_perspective": "Perspective A",
-    "user_b_perspective": "Perspective B",
-    "compromises": ["Compromise 1"],
-    "joint_message": "Joint",
-}
+A_TEXT = "I felt hurt when the Goa trip happened without me. I want to be included in plans."
+B_TEXT = "I did invite them, but I thought they said no. I don't want them to feel left out."
 
 
-def test_mark_ready_builds_joint_view_once(db, as_party):
-    _session(db, user_b_ready=True)
-    with patch.object(sessions_module, "run_joint_pipeline", side_effect=lambda state: {"state": state, **JOINT}) as run:
-        response = client.post("/api/sessions/sess_abc/ready", json={"ready": True})
-        assert response.status_code == 200
-        assert response.json()["status"] == "joint_review"
-        # A second, late build attempt finds the claim already taken.
-        sessions_module._maybe_build_summary({**db.rows("sessions")[0], "status": "intake"})
-    assert run.call_count == 1
-    assert len(db.rows("joint_summaries")) == 1
-    summary = client.get("/api/sessions/sess_abc/summary").json()
-    assert summary["user_a_perspective"] == "Perspective A"
+def _approve(as_party, party, text):
+    as_party(party)
+    return client.post("/api/sessions/sess_abc/share/approve", json={"text": text})
 
 
-def test_joint_build_failure_reopens_intake(db, as_party):
-    _session(db, user_b_ready=True)
-    with patch.object(sessions_module, "run_joint_pipeline", side_effect=RuntimeError("llm down")):
-        response = client.post("/api/sessions/sess_abc/ready", json={"ready": True})
-    assert response.status_code == 502
-    assert db.rows("sessions")[0]["status"] == "intake"
+def test_draft_is_built_from_own_room_and_private_to_its_author(db, as_party, agents):
+    _session(db)
+    db.table("messages").insert({"session_id": "sess_abc", "sender_role": "user_a", "audience_role": "user_a", "content": "A-ONLY words"}).execute()
+    db.table("messages").insert({"session_id": "sess_abc", "sender_role": "user_b", "audience_role": "user_b", "content": "B-ONLY words"}).execute()
 
+    response = client.post("/api/sessions/sess_abc/share/draft")
+    assert response.status_code == 200
+    assert response.json()["draft"].startswith("I felt left out")
+    prompt = agents.of("SHARE_DRAFTER")[0]["prompt"]
+    assert "A-ONLY words" in prompt and "B-ONLY words" not in prompt
 
-def test_flagged_party_cannot_move_to_joint(db, as_party):
-    state = new_shared_state("sess_abc")
-    state["safety"]["joint_blocked_by"] = ["B"]
-    _session(db, mediation_state=state, user_a_ready=True)
-
+    assert client.get("/api/sessions/sess_abc/share").json()["draft"].startswith("I felt left out")
     as_party("user_b")
+    assert client.get("/api/sessions/sess_abc/share").json()["draft"] is None
+
+
+def test_draft_failure_lets_the_person_write_their_own(db, as_party):
+    _session(db)
+    fake = FakeAgents(SHARE_DRAFTER=RuntimeError("down"))
+    with patch.object(sessions_module, "draft_share", partial(real_draft_share, caller=fake)):
+        response = client.post("/api/sessions/sess_abc/share/draft")
+    assert response.status_code == 200 and response.json()["draft"] is None
+
+
+def test_approving_records_exact_text_and_marks_ready(db, as_party, agents):
+    _session(db)
+    response = _approve(as_party, "user_a", A_TEXT)
+    assert response.status_code == 200
+    assert response.json()["user_a_ready"] is True
+    assert response.json()["my_share"] == A_TEXT
+    session = db.rows("sessions")[0]
+    assert session["mediation_state"]["approved_shares"]["A"] == [A_TEXT]
+    assert session["status"] == "intake"  # waiting for B
+    as_party("user_b")
+    assert client.get("/api/sessions/sess_abc").json()["my_share"] is None
+
+
+def test_both_approving_builds_joint_view_from_their_exact_words(db, as_party, agents):
+    _session(db)
+    _approve(as_party, "user_a", A_TEXT)
+    response = _approve(as_party, "user_b", B_TEXT)
+    assert response.json()["status"] == "joint_review"
+    summary = client.get("/api/sessions/sess_abc/summary").json()
+    assert summary["user_a_perspective"] == A_TEXT
+    assert summary["user_b_perspective"] == B_TEXT
+    assert summary["common_ground"] == "Both of you want this to feel fair."
+    assert summary["compromises"] == ["Repay in three installments."]
+    assert len(db.rows("joint_summaries")) == 1
+
+
+def test_ready_requires_approval(db, as_party):
+    _session(db)
     response = client.post("/api/sessions/sess_abc/ready", json={"ready": True})
     assert response.status_code == 409
-    assert "safety" not in response.json()["detail"].lower()
+    assert db.rows("sessions")[0]["user_a_ready"] is False
 
-    # Even if both flags are set, the joint build does not start.
-    db.rows("sessions")[0]["user_b_ready"] = True
+
+def test_withdrawing_clears_the_share_and_reopens_chat(db, as_party, agents):
+    _session(db)
+    _approve(as_party, "user_a", A_TEXT)
+    assert client.post("/api/sessions/sess_abc/messages", json={"content": "more"}).status_code == 409
+    assert client.post("/api/sessions/sess_abc/share/draft").status_code == 409
+
+    response = client.post("/api/sessions/sess_abc/ready", json={"ready": False})
+    assert response.status_code == 200
+    assert response.json()["user_a_ready"] is False and response.json()["my_share"] is None
+    assert db.rows("sessions")[0]["mediation_state"]["approved_shares"]["A"] == []
+    assert client.post("/api/sessions/sess_abc/messages", json={"content": "more"}).status_code == 200
+
+
+def test_share_with_crisis_words_halts_only_its_author(db, as_party, agents):
+    _session(db)
+    response = _approve(as_party, "user_b", "Honestly some days I want to die over all this family stuff.")
+    assert response.json()["status"] == "halted" and response.json()["halt_view"] == "self"
+    assert db.rows("sessions")[0]["halted_for"] == "user_b"
+    assert db.rows("sessions")[0]["mediation_state"]["approved_shares"]["B"] == []
+    as_party("user_a")
+    assert client.get("/api/sessions/sess_abc").json()["halt_view"] == "other"
+
+
+def test_share_flagged_moderate_is_held_back(db, as_party):
+    _session(db)
+    fake = FakeAgents(SAFETY_GUARDIAN={"flag": True, "severity": 2, "action": "PAUSE_AND_CHECK"})
+    with patch.object(sessions_module, "check_share", partial(real_check_share, caller=fake)):
+        response = _approve(as_party, "user_a", A_TEXT)
+    assert response.status_code == 409
+    session = db.rows("sessions")[0]
+    assert session["user_a_ready"] is False
+    assert session["mediation_state"]["approved_shares"]["A"] == []
+    assert session["mediation_state"]["safety"]["joint_blocked_by"] == ["A"]
+
+
+def test_share_is_not_released_if_safety_check_is_down(db, as_party):
+    _session(db)
+    fake = FakeAgents(SAFETY_GUARDIAN=RuntimeError("down"))
+    with patch.object(sessions_module, "check_share", partial(real_check_share, caller=fake)):
+        response = _approve(as_party, "user_a", A_TEXT)
+    assert response.status_code == 503
+    assert db.rows("sessions")[0]["user_a_ready"] is False
+    assert db.rows("party_shares") == []
+
+
+def test_previously_flagged_party_cannot_approve(db, as_party, agents):
+    state = new_shared_state("sess_abc")
+    state["safety"]["joint_blocked_by"] = ["B"]
+    _session(db, mediation_state=state)
+    response = _approve(as_party, "user_b", B_TEXT)
+    assert response.status_code == 409
+    assert "safety" not in response.json()["detail"].lower()
+    assert agents.of("SAFETY_GUARDIAN") == []
+
+
+@pytest.mark.parametrize("text", ["", "too short", "x" * 1201])
+def test_share_text_is_bounded(db, as_party, agents, text):
+    _session(db)
+    assert _approve(as_party, "user_a", text).status_code == 422
+
+
+def test_joint_build_failure_reopens_intake(db, as_party, agents):
+    _session(db)
+    _approve(as_party, "user_a", A_TEXT)
+    with patch.object(sessions_module, "run_joint_pipeline", side_effect=RuntimeError("llm down")):
+        response = _approve(as_party, "user_b", B_TEXT)
+        # The share still went through; only the joint build failed.
+        assert response.status_code == 200 and response.json()["user_b_ready"] is True
+        assert db.rows("sessions")[0]["status"] == "intake"
+        assert client.post("/api/sessions/sess_abc/joint").status_code == 502
+
+    retry = client.post("/api/sessions/sess_abc/joint")
+    assert retry.status_code == 200 and retry.json()["status"] == "joint_review"
+
+
+def test_joint_view_is_built_only_once(db, as_party, agents):
+    _session(db)
+    _approve(as_party, "user_a", A_TEXT)
+    _approve(as_party, "user_b", B_TEXT)
     with patch.object(sessions_module, "run_joint_pipeline") as run:
-        sessions_module._maybe_build_summary(db.rows("sessions")[0])
+        sessions_module._maybe_build_summary({**db.rows("sessions")[0], "status": "intake"})
     run.assert_not_called()
-    assert db.rows("sessions")[0]["status"] == "intake"
 
 
 def test_messages_rejected_after_intake(db, as_party):

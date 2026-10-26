@@ -5,7 +5,14 @@ import pytest
 from pydantic import ValidationError
 
 from app.agents import llm
-from app.agents.pipeline import NEUTRAL_FALLBACK, handle_party_turn, run_joint_pipeline
+from app.agents.pipeline import (
+    NEUTRAL_FALLBACK,
+    check_share,
+    draft_share,
+    handle_party_turn,
+    run_joint_pipeline,
+    share_severity,
+)
 from app.agents.prompts import ROLE_PROMPTS, fill, required_keys
 from app.agents.schemas import validate_output
 from app.agents.state import (
@@ -83,6 +90,8 @@ class FakeAgents:
             return {"message": "Both of you want this to feel fair."}
         if role == "HANDOFF":
             return {"message_to_parties": "A human mediator would help here.", "urgency": "URGENT"}
+        if role == "SHARE_DRAFTER":
+            return {"summary": "I felt left out when plans were made without me. I want to be asked next time.", "left_out": []}
         return {}
 
     def roles(self):
@@ -180,13 +189,15 @@ def test_shared_view_strips_private_and_safety_keys():
     view = shared_view(state)
     assert "private_A" not in view
     assert "safety" not in view
+    assert "audit_log" not in view
+    assert "handoff" not in view
     assert "hidden_concerns" not in view["parties"]["B"]
 
 
 # --- Fix 3: replies go to the speaking party's own caucus ---------------------
 
 
-@pytest.mark.parametrize("routed_to", ["CAUCUS_B", "JOINT_VOICE", "SOMETHING_ELSE"])
+@pytest.mark.parametrize("routed_to", ["CAUCUS_B", "JOINT_VOICE", "DIAGNOSTICIAN", "SOMETHING_ELSE"])
 def test_orchestrator_cannot_route_a_message_away_from_the_speaker(routed_to):
     agents = FakeAgents(ORCHESTRATOR={"stage": "STORYTELLING", "next_agent": routed_to, "reason": "x"})
     state = new_shared_state("D-1")
@@ -202,26 +213,90 @@ def test_orchestrator_cannot_route_a_message_away_from_the_speaker(routed_to):
     assert coerced and coerced[0]["requested_agent"] == routed_to
 
 
-def test_internal_agents_run_without_rerunning_inbound_safety():
-    plans = iter(
-        [
-            {"stage": "DIAGNOSIS", "next_agent": "DIAGNOSTICIAN"},
-            {"stage": "STORYTELLING", "next_agent": "CAUCUS_A"},
-        ]
-    )
-    agents = FakeAgents(ORCHESTRATOR=lambda _m: next(plans))
+def test_internal_agents_are_not_run_during_intake():
+    agents = FakeAgents(ORCHESTRATOR={"stage": "DIAGNOSIS", "next_agent": "DIAGNOSTICIAN"})
     result = _turn(agents)
-    assert agents.roles().count("DIAGNOSTICIAN") == 1
-    inbound = [c for c in agents.of("SAFETY_GUARDIAN") if '"inbound"' in c["mapping"]["LATEST_EVENT"]]
-    assert len(inbound) == 1
-    assert result.state["agenda"] == ["I1"]
-
-
-def test_internal_hops_are_capped():
-    agents = FakeAgents(ORCHESTRATOR={"stage": "DIAGNOSIS", "next_agent": "OPTIONS"})
-    result = _turn(agents)
-    assert agents.roles().count("OPTIONS") == 4
+    assert "DIAGNOSTICIAN" not in agents.roles()
     assert result.agent == "CAUCUS_A"
+    assert result.state["issues"] == []
+
+
+def test_unknown_stage_label_is_not_stored():
+    agents = FakeAgents(ORCHESTRATOR={"stage": "A_IS_HURT_ABOUT_THE_TRIP", "next_agent": "CAUCUS_A"})
+    assert _turn(agents).state["stage"] == "STORYTELLING"
+
+
+TRIP = "B went on the Goa trip without me"
+
+
+def _echoing_agents():
+    """A's agents echo A's words in every free-text field, like a real model."""
+    return FakeAgents(
+        SAFETY_GUARDIAN=lambda m: {**SAFE, "flag": True, "severity": 1, "action": "CONTINUE_WITH_CARE", "evidence": TRIP},
+        ORCHESTRATOR={
+            "stage": f"HURT: {TRIP}",
+            "next_agent": "DIAGNOSTICIAN",
+            "instructions_to_agent": f"Reflect that {TRIP}.",
+            "reason": f"A says {TRIP}.",
+        },
+        DIAGNOSTICIAN={"issues": [{"id": "I1", "topic": TRIP}], "agenda": ["I1"]},
+        CAUCUS={
+            "reply_to_party": f"It hurt that {TRIP}?",
+            "state_updates": {"positions": [TRIP], "new_issues": [{"topic": TRIP}]},
+            "share_proposal": {"text": TRIP, "approved_by_party": True},
+            "private_notes": TRIP,
+        },
+        NEUTRALITY_AUDITOR=lambda m: {
+            "final_message": m["DRAFT"],
+            "alert_orchestrator": True,
+            "issues_found": [f"quotes '{TRIP}'"],
+        },
+    )
+
+
+def test_nothing_a_said_reaches_any_of_b_agents():
+    first = _turn(_echoing_agents(), message=f"{TRIP}, and didn't even tell me.")
+    b_agents = FakeAgents()
+    _turn(b_agents, party="B", message="hi", state=first.state, private=empty_private())
+    assert b_agents.calls
+    for call in b_agents.calls:
+        assert TRIP not in call["prompt"], f"A's words leaked into B's {call['role']}"
+
+
+def test_nothing_a_said_reaches_b_through_a_handoff():
+    first = _turn(_echoing_agents(), message=TRIP)
+    first.state["handoff"] = {"dispute_summary": TRIP, "message_to_parties": TRIP}
+    b_agents = FakeAgents(ORCHESTRATOR={"stage": "REFER_TO_HUMAN", "next_agent": "HANDOFF", "reason": "B asked"})
+    _turn(b_agents, party="B", message="can I talk to a human?", state=first.state, private=empty_private())
+    for call in b_agents.calls:
+        assert TRIP not in call["prompt"], f"A's words leaked into B's {call['role']}"
+
+
+# --- Dispute topic is framed with explicit roles for each party --------------
+
+GOA = "You went on the Goa trip without me"
+
+
+def test_b_caucus_gets_topic_attributed_to_a():
+    agents = FakeAgents()
+    handle_party_turn(party="B", message="hi", state=new_shared_state("D-1"), private=empty_private(),
+                      topic=GOA, caller=agents)
+    framing = agents.of("CAUCUS")[0]["mapping"]["DISPUTE_TOPIC"]
+    assert f'"{GOA}"' in framing
+    assert "The OTHER person (A) opened this room" in framing
+    assert "did not write this" in framing and "not a fact" in framing
+    assert '"I", "me" or "my" in it means A' in framing
+
+
+def test_a_caucus_gets_topic_as_its_own_words():
+    agents = FakeAgents()
+    _turn(agents)  # no topic
+    assert agents.of("CAUCUS")[0]["mapping"]["DISPUTE_TOPIC"] == "Not given."
+    agents = FakeAgents()
+    handle_party_turn(party="A", message="hi", state=new_shared_state("D-1"), private=empty_private(),
+                      topic=GOA, caller=agents)
+    framing = agents.of("CAUCUS")[0]["mapping"]["DISPUTE_TOPIC"]
+    assert framing.startswith("The person you are talking to (A) opened this room")
 
 
 # --- Fix 4: safety fails closed; halts carry helplines ------------------------
@@ -345,12 +420,114 @@ def test_joint_pipeline_uses_only_shared_agents():
     assert built["compromises"][0].startswith("Repay")
 
 
-def test_joint_perspectives_are_never_duplicated():
+A_SHARE = "I felt hurt when the Goa trip happened without me. I want to be included in plans."
+B_SHARE = "I did invite them, but I thought they said no. I don't want them to feel left out."
+
+
+def _both_shared():
     state = new_shared_state("D-1")
-    state["approved_shares"] = {"A": ["I need to know I'll be repaid."], "B": []}
-    built = run_joint_pipeline(state=state, caller=FakeAgents())
-    assert built["user_a_perspective"] == "I need to know I'll be repaid."
-    assert built["user_b_perspective"] == "Person B has not chosen anything to share yet."
+    state["approved_shares"] = {"A": [A_SHARE], "B": [B_SHARE]}
+    return state
+
+
+def test_joint_view_shows_each_partys_approved_words_verbatim():
+    agents = FakeAgents(JOINT_VOICE={"message": "You both care about being included."})
+    built = run_joint_pipeline(state=_both_shared(), caller=agents)
+    assert built["user_a_perspective"] == A_SHARE
+    assert built["user_b_perspective"] == B_SHARE
+    assert built["common_ground"] == "You both care about being included."
+    assert built["compromises"] == ["Repay in three installments."]
+
+
+def test_no_canned_compromises_when_there_are_no_real_options():
+    built = run_joint_pipeline(state=_both_shared(), caller=FakeAgents(OPTIONS={"options": []}))
+    assert built["compromises"] == []
+
+
+def test_options_using_other_keys_are_kept():
+    agents = FakeAgents(OPTIONS={"options": [{"text": "Plan the next trip together."}, "Check in before booking."]})
+    built = run_joint_pipeline(state=_both_shared(), caller=agents)
+    assert built["compromises"] == ["Plan the next trip together.", "Check in before booking."]
+
+
+def test_options_are_dropped_if_their_check_cannot_run():
+    def safety(mapping):
+        if "Repay" in mapping["LATEST_EVENT"]:
+            raise RuntimeError("down")
+        return dict(SAFE)
+
+    built = run_joint_pipeline(state=_both_shared(), caller=FakeAgents(SAFETY_GUARDIAN=safety))
+    assert built["compromises"] == []
+
+
+def test_common_ground_is_omitted_when_joint_voice_fails():
+    built = run_joint_pipeline(state=_both_shared(), caller=FakeAgents(JOINT_VOICE=RuntimeError("down")))
+    assert built["common_ground"] is None
+
+
+def test_caucus_cannot_approve_a_share_on_a_partys_behalf():
+    agents = FakeAgents(
+        CAUCUS={
+            "reply_to_party": "Shall I tell them?",
+            "state_updates": {},
+            "share_proposal": {"text": "secret", "approved_by_party": True},
+        }
+    )
+    result = _turn(agents)
+    assert result.state["approved_shares"] == {"A": [], "B": []}
+
+
+# --- Share drafting and checking ----------------------------------------------
+
+
+def test_draft_uses_only_the_partys_own_material():
+    agents = FakeAgents()
+    out = draft_share(
+        party="B",
+        transcript="Them: I did invite them\nMediator: That sounds confusing.",
+        private={"notes": "B notes"},
+        topic=GOA,
+        state=_both_shared(),
+        caller=agents,
+    )
+    assert out["summary"].startswith("I felt left out")
+    prompt = agents.of("SHARE_DRAFTER")[0]["prompt"]
+    assert "I did invite them" in prompt and "B notes" in prompt
+    assert "The OTHER person (A) opened this room" in prompt
+    for call in agents.calls:
+        assert A_SHARE not in call["prompt"], f"A's share leaked into B's {call['role']}"
+
+
+def test_unsafe_draft_is_redrafted_then_dropped():
+    drafts = iter(["You are selfish.", "You are still selfish."])
+    agents = FakeAgents(
+        SHARE_DRAFTER=lambda _m: {"summary": next(drafts)},
+        SAFETY_GUARDIAN=_outbound_safety({"You are selfish.", "You are still selfish."}),
+    )
+    out = draft_share(party="A", transcript="x", private=None, topic=None, state=new_shared_state("D"), caller=agents)
+    assert out is None
+    assert agents.roles().count("SHARE_DRAFTER") == 2
+
+
+def test_drafter_failure_returns_none():
+    agents = FakeAgents(SHARE_DRAFTER=RuntimeError("down"))
+    assert draft_share(party="A", transcript="x", private=None, topic=None, state=new_shared_state("D"), caller=agents) is None
+
+
+def test_check_share_halts_on_crisis_words_without_llm():
+    out = check_share(party="A", text="I want to die", state=new_shared_state("D"), caller=lambda *_: pytest.fail("no LLM"))
+    assert share_severity(out) == 3
+
+
+def test_check_share_shows_the_exact_text_to_safety():
+    agents = FakeAgents()
+    check_share(party="A", text=A_SHARE, state=new_shared_state("D"), caller=agents)
+    assert A_SHARE in agents.of("SAFETY_GUARDIAN")[0]["prompt"]
+
+
+def test_check_share_raises_when_safety_is_down():
+    with pytest.raises(RuntimeError):
+        check_share(party="A", text=A_SHARE, state=new_shared_state("D"), caller=FakeAgents(SAFETY_GUARDIAN=RuntimeError("down")))
 
 
 # --- Schemas, retries, audit --------------------------------------------------

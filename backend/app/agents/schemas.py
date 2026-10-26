@@ -191,6 +191,16 @@ class HandoffOut(_Out):
         return "" if value is None else str(value)
 
 
+class ShareDraftOut(_Out):
+    summary: str
+    left_out: list[str] = Field(default_factory=list)
+
+    @field_validator("left_out", mode="before")
+    @classmethod
+    def _left_out(cls, value: Any) -> list[str]:
+        return [str(item) for item in _as_list(value) if item]
+
+
 ROLE_SCHEMAS: dict[str, type[BaseModel]] = {
     "SAFETY_GUARDIAN": SafetyOut,
     "ORCHESTRATOR": OrchestratorOut,
@@ -200,6 +210,7 @@ ROLE_SCHEMAS: dict[str, type[BaseModel]] = {
     "DIAGNOSTICIAN": DiagnosticianOut,
     "OPTIONS": OptionsOut,
     "HANDOFF": HandoffOut,
+    "SHARE_DRAFTER": ShareDraftOut,
 }
 
 

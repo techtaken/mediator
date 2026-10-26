@@ -12,9 +12,20 @@ SHARED_PARTY_KEYS = ("name", "intensity", "willing", "feels_heard", "consented_t
 SHARED_SIGNAL_UPDATES = ("intensity", "willing", "feels_heard")
 PRIVATE_PROFILE_LISTS = ("positions", "interests", "hidden_concerns", "resolution_needs")
 
-# Top-level keys never shown to agents. "safety" holds per-party flags: the other
-# party must never learn that someone triggered one.
-PRIVATE_TOP_LEVEL_KEYS = ("private_A", "private_B", "safety", "audit_seq", "audit_persisted_seq")
+# Top-level keys never shown to agents.
+# - "safety" holds per-party flags: the other party must never learn about one.
+# - "audit_log" and "handoff" hold agents' free-text reasoning about a party's
+#   private turns ("A is hurt that B..."). Passing them on leaked one party's
+#   words into the other party's caucus.
+PRIVATE_TOP_LEVEL_KEYS = (
+    "private_A",
+    "private_B",
+    "safety",
+    "audit_log",
+    "audit_seq",
+    "audit_persisted_seq",
+    "handoff",
+)
 
 
 def empty_party() -> dict[str, Any]:
@@ -71,10 +82,11 @@ def user_role(code: PartyKey) -> str:
 
 
 def shared_view(state: dict[str, Any]) -> dict[str, Any]:
-    """What agents may see. Private memory and safety flags are never included.
+    """What agents may see: approved shares, process signals and joint-stage results.
 
-    Party entries are filtered to an allowlist, which also scrubs states saved
-    before private fields were moved out of shared state.
+    Private memory, safety flags and anything holding agents' free-text notes
+    about a private turn are never included. Party entries are filtered to an
+    allowlist, which also scrubs states saved before private fields moved out.
     """
     view = copy.deepcopy(state)
     for key in PRIVATE_TOP_LEVEL_KEYS:
@@ -85,8 +97,19 @@ def shared_view(state: dict[str, Any]) -> dict[str, Any]:
         for code, party in parties.items()
         if isinstance(party, dict)
     }
-    log = view.get("audit_log") or []
-    view["audit_log"] = log[-20:]
+    return view
+
+
+def party_view(state: dict[str, Any], party: PartyKey) -> dict[str, Any]:
+    """What agents may see during one party's private intake turn.
+
+    Only that party's own approved shares, plus neutral signals. Nothing the
+    other party said, even content a model judged "approved to share", reaches
+    this party's agents before the joint stage.
+    """
+    view = shared_view(state)
+    shares = view.get("approved_shares") or {}
+    view["approved_shares"] = {party: list(shares.get(party) or [])}
     return view
 
 
@@ -143,17 +166,14 @@ def apply_caucus_updates(
         )
 
 
-def append_approved_share(state: dict[str, Any], party: PartyKey, proposal: dict[str, Any] | None) -> None:
-    if not proposal:
-        return
-    if not proposal.get("approved_by_party"):
-        return
-    text = (proposal.get("text") or "").strip()
-    if not text:
-        return
-    shares = state.setdefault("approved_shares", {}).setdefault(party, [])
-    if text not in shares:
-        shares.append(text)
+def set_approved_share(state: dict[str, Any], party: PartyKey, text: str | None) -> None:
+    """Set (or clear) the one text this party approved for the other to see.
+
+    The only way anything enters approved_shares: an explicit approval by the
+    party in the app. Agents never approve on a party's behalf.
+    """
+    shares = state.setdefault("approved_shares", {"A": [], "B": []})
+    shares[party] = [text] if text else []
 
 
 def record_safety_flag(state: dict[str, Any], party: PartyKey, report: dict[str, Any]) -> None:

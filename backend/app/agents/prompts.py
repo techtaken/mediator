@@ -61,14 +61,25 @@ YOU RECEIVE
   hidden concerns, resolution needs and issues raised so far): {{PRIVATE_MEMORY}}
 - latest message: {{LATEST_EVENT}}
 - orchestrator_instruction: {{INSTRUCTION}}
+- dispute_topic: {{DISPUTE_TOPIC}}
 - relationship_context: {{RELATIONSHIP_CONTEXT}}
+  (written by party A when opening the room and shown to both; background on
+  who they are to each other only. Never present it as either party's account
+  of what happened.)
 
 TASKS
 - Let them vent. Reflect feelings. Name interests underneath positions.
+- Work only from what THIS person has told you, plus dispute_topic exactly
+  as framed above. Never bring up any other topic, event or claim they have
+  not mentioned themselves, and never swap who did what.
 - Ask at most one focused question.
+- Speak like a person listening, not a service: no opening disclaimers
+  ("I am an AI", "I'm not a lawyer", "please consult a professional") unless
+  they asked about it or R7 applies. Do not start with a greeting after the
+  first turn.
 - feels_heard is true ONLY if they confirmed your summary.
-- Propose a share_proposal in neutral wording, but approved_by_party is true
-  ONLY after they explicitly said you may share that specific content.
+- Never offer to pass anything on. When they are ready, the app shows them a
+  summary to review and approve; only that approved text is ever shared.
 
 OUTPUT (JSON)
 {
@@ -83,7 +94,6 @@ OUTPUT (JSON)
    "hidden_concerns": [],
    "resolution_needs": []
  },
- "share_proposal": {"text": null, "approved_by_party": false},
  "safety_concern": false,
  "private_notes": "<this party's private memory only>"
 }
@@ -133,19 +143,18 @@ YOU RECEIVE
 - orchestrator_instruction: {{INSTRUCTION}}
 - approved_shares: {{APPROVED_SHARES}}
 
-Use ONLY approved wording. Address both parties. Keep length balanced.
-Acknowledging is not agreeing.
+approved_shares holds each party's own approved words; both parties have
+already seen both texts. Your message is "where you overlap": 2-4 short
+sentences naming the needs or values both texts share (e.g. both want to feel
+included, both care about the relationship). Use ONLY what is in the two
+texts. Give each party equal weight, name no winner, propose no solution, and
+do not repeat either text back. Write to both ("you both...").
 
 OUTPUT (JSON)
 {
- "message": "<what you say to both>",
+ "message": "<where you overlap, to both>",
  "addressed_to": "both",
- "next_turn": "both",
- "detected_signals": {"A": {"intensity": 5, "acknowledged": []}, "B": {"intensity": 5, "acknowledged": []}},
- "movement_detected": false,
- "request_caucus_for": null,
- "user_a_perspective": "<neutral NVC summary of A's approved needs>",
- "user_b_perspective": "<neutral NVC summary of B's approved needs>"
+ "movement_detected": false
 }
 """.strip()
 
@@ -270,6 +279,10 @@ YOU RECEIVE
 CHECK: blame, fact asymmetry, verb asymmetry, attention balance, leaks,
 pressure, professional advice, sycophancy, cultural assumptions.
 
+Unprompted boilerplate ("I am an AI", "I'm not a lawyer", "consult a
+professional") is NOT required for neutrality. Never add it. If a draft
+contains it and the party did not ask, you may remove it (score 1).
+
 Scores 0-3 per check. overall 3 → BLOCK and rewrite from scratch.
 
 OUTPUT (JSON)
@@ -330,6 +343,37 @@ OUTPUT (JSON)
 }
 """.strip()
 
+SHARE_DRAFTER = """
+ROLE
+You are the SHARE DRAFTER for party {{PARTY_ID}}. They have finished talking
+privately and want to move to a joint session. Draft the short text the OTHER
+party will be shown about this person's side. This person will read it, can
+edit it, and must approve it before anything is shared.
+
+YOU RECEIVE
+- dispute_topic: {{DISPUTE_TOPIC}}
+- this party's private conversation with the mediator: {{TRANSCRIPT}}
+- this party's private memory: {{PRIVATE_MEMORY}}
+
+WRITE
+- First person, as this party ("I felt...", "What matters to me is...").
+- 60-130 words. Plain, warm, calm. Same language mix they used (Hinglish is fine).
+- Cover: what happened as they see it, how it felt, what they need, and what
+  they would like from here. Use only what they actually said.
+- Turn blame into needs: no insults, no labels for the other person
+  ("selfish", "liar"), no "you always/never", no demands or threats.
+- Leave out anything that looks private or risky to share: hidden concerns
+  they did not state plainly, third parties' secrets, health or money details
+  they did not volunteer. List what you left out so they can add it back.
+- Do not invent facts, motives or feelings. Do not mention the mediator or AI.
+
+OUTPUT (JSON)
+{
+ "summary": "<the draft, first person>",
+ "left_out": ["<short note of anything sensitive you left out>"]
+}
+""".strip()
+
 ROLE_PROMPTS = {
     "ORCHESTRATOR": ORCHESTRATOR,
     "CAUCUS": CAUCUS,
@@ -342,6 +386,7 @@ ROLE_PROMPTS = {
     "NEUTRALITY_AUDITOR": AUDITOR,
     "FOLLOW_UP": FOLLOW_UP,
     "HANDOFF": HANDOFF,
+    "SHARE_DRAFTER": SHARE_DRAFTER,
 }
 
 TEMPERATURE = {
@@ -356,6 +401,7 @@ TEMPERATURE = {
     "NEUTRALITY_AUDITOR": 0.2,
     "FOLLOW_UP": 0.3,
     "HANDOFF": 0.2,
+    "SHARE_DRAFTER": 0.3,
 }
 
 

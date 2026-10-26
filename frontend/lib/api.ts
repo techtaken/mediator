@@ -1,4 +1,4 @@
-import type { ChatMessage, JointSummary, Session } from "./types";
+import type { ChatMessage, JointSummary, Session, ShareDraft } from "./types";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -13,7 +13,7 @@ export function getInviteToken(sessionId: string) {
   return sessionStorage.getItem(TOKEN_KEY(sessionId));
 }
 
-async function request<T>(
+export async function request<T>(
   path: string,
   init: RequestInit & { accessToken?: string | null; inviteToken?: string | null } = {},
 ): Promise<T> {
@@ -41,13 +41,13 @@ async function request<T>(
   return (await res.json()) as T;
 }
 
-type AuthOpts = { accessToken?: string | null; inviteToken?: string | null };
+export type AuthOpts = { accessToken?: string | null; inviteToken?: string | null };
 
-export function createSession(context: string, accessToken: string) {
+export function createSession(topic: string, context: string, accessToken: string) {
   return request<Session>("/api/sessions", {
     method: "POST",
     accessToken,
-    body: JSON.stringify({ relationship_context: context }),
+    body: JSON.stringify({ topic, relationship_context: context }),
   });
 }
 
@@ -67,10 +67,28 @@ export function sendMessage(id: string, content: string, auth: AuthOpts) {
   });
 }
 
-export function markReady(id: string, ready: boolean, auth: AuthOpts) {
+export function draftShare(id: string, auth: AuthOpts) {
+  return request<ShareDraft>(`/api/sessions/${id}/share/draft`, { method: "POST", ...auth });
+}
+
+export function approveShare(id: string, text: string, auth: AuthOpts) {
+  return request<Session>(`/api/sessions/${id}/share/approve`, {
+    method: "POST",
+    body: JSON.stringify({ text }),
+    ...auth,
+  });
+}
+
+/** Retry building the joint view once both people have shared. */
+export function retryJoint(id: string, auth: AuthOpts) {
+  return request<Session>(`/api/sessions/${id}/joint`, { method: "POST", ...auth });
+}
+
+/** Withdraw the approved share and readiness, reopening private chat. */
+export function withdrawShare(id: string, auth: AuthOpts) {
   return request<Session>(`/api/sessions/${id}/ready`, {
     method: "POST",
-    body: JSON.stringify({ ready }),
+    body: JSON.stringify({ ready: false }),
     ...auth,
   });
 }
