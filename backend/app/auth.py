@@ -28,7 +28,7 @@ def _jwks_client() -> PyJWKClient:
     return PyJWKClient(get_settings().jwks_url)
 
 
-def _decode_user(authorization: str | None) -> str | None:
+def _decode_claims(authorization: str | None) -> dict | None:
     if not authorization or not authorization.lower().startswith("bearer "):
         return None
     token = authorization.split(" ", 1)[1].strip()
@@ -44,10 +44,14 @@ def _decode_user(authorization: str | None) -> str | None:
         raise HTTPException(status_code=401, detail="Invalid session token") from exc
     except Exception as exc:
         raise HTTPException(status_code=401, detail="Invalid session token") from exc
-    user_id = payload.get("sub")
-    if not user_id:
+    if not payload.get("sub"):
         raise HTTPException(status_code=401, detail="Invalid session token")
-    return user_id
+    return payload
+
+
+def _decode_user(authorization: str | None) -> str | None:
+    claims = _decode_claims(authorization)
+    return claims["sub"] if claims else None
 
 
 def require_logged_in(
@@ -57,6 +61,25 @@ def require_logged_in(
     if not user_id:
         raise HTTPException(status_code=401, detail="Sign in required")
     return user_id
+
+
+class Admin:
+    def __init__(self, user_id: str, email: str):
+        self.user_id = user_id
+        self.email = email
+
+
+def require_admin(
+    authorization: Annotated[str | None, Header()] = None,
+) -> Admin:
+    """Signed-in user whose email is in ADMIN_EMAILS. Fails closed when unset."""
+    claims = _decode_claims(authorization)
+    if not claims:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    email = str(claims.get("email") or "").strip().lower()
+    if not email or email not in get_settings().admin_email_set:
+        raise HTTPException(status_code=403, detail="Admins only")
+    return Admin(claims["sub"], email)
 
 
 def load_session(session_id: str) -> dict:

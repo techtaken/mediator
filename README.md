@@ -30,6 +30,8 @@ When a room halts, only the party who triggered it sees why, with helplines. The
    - `001_init.sql`: sessions, messages, joint summaries
    - `002_mediation_agents.sql`: shared dispute state, per-party private memory, audit log
    - `003_phase0_hardening.sql`: state versioning, per-party halts, `building_joint` status, structured private memory
+   - `004_session_topic.sql`: the "what is this about" line Person A writes, shown to Person B
+   - `005_share_approval.sql`: each person's draft and approved share, and the joint "where you overlap" note
 4. Copy keys from **Project Settings → API**:
    - Project URL
    - Publishable key (`sb_publishable_…`) for the browser
@@ -66,6 +68,12 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
+### Admin portal
+
+`/admin` lists every session and `/admin/<id>` shows both private rooms, private memory, safety flags, the joint summary and the audit trail. It is read-only.
+
+To give someone access, add their sign-in email to `ADMIN_EMAILS` in `backend/.env` (comma-separated) and restart the backend. With it empty, nobody is an admin. Every time an admin opens a session, an `ADMIN` entry with their email is written to that session's audit trail; if that write fails, the page is refused.
+
 ### Tests
 
 ```bash
@@ -79,8 +87,8 @@ cd backend
 1. Sign in as Person A and start a session (optional relationship context).
 2. Copy the invite or share via WhatsApp.
 3. Open the invite in a private window as Person B (no login).
-4. Each person vents in their private chat, then taps **Ready for joint session**.
-5. When both are ready, the joint view shows neutralized perspectives and 2–3 compromises.
+4. Each person talks in their private chat, then taps **I'm ready to share**. The mediator drafts a short summary of their side from their own chat; they edit it and approve the exact words the other person will read. Approved text is safety-checked before it is released.
+5. When both have shared, the joint view shows each side in its own approved words, a "where you overlap" note, and options drawn only from those two texts. Nothing else from either private chat is shared.
 
 Crisis / severe-harm phrases halt the room. The person who wrote them sees Indian helpline numbers (the single list lives in `backend/app/safety.py`; re-verify it before any public launch). The other person only sees that the session is paused.
 

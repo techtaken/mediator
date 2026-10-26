@@ -20,7 +20,13 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-3.5-flash-lite"
     gemini_timeout_ms: int = 30000
     cors_origins: str = "http://localhost:3000"
+    # Comma-separated emails allowed into /api/admin. Empty means no admins.
+    admin_emails: str = ""
     frontend_base_url: str = "http://localhost:3000"
+
+    @property
+    def admin_email_set(self) -> set[str]:
+        return {email.strip().lower() for email in self.admin_emails.split(",") if email.strip()}
 
     @property
     def jwks_url(self) -> str:

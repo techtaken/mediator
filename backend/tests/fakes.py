@@ -26,7 +26,10 @@ class FakeQuery:
         self.payload: Any = None
         self.filters: list[tuple[str, Any]] = []
         self.limit_n: int | None = None
+        self.offset_n = 0
         self.order_by: str | None = None
+        self.order_desc = False
+        self.in_filters: list[tuple[str, list[Any]]] = []
         self.on_conflict: str | None = None
 
     # builder ---------------------------------------------------------------
@@ -50,17 +53,27 @@ class FakeQuery:
         self.filters.append((column, value))
         return self
 
+    def in_(self, column: str, values: list[Any]) -> "FakeQuery":
+        self.in_filters.append((column, list(values)))
+        return self
+
     def limit(self, n: int) -> "FakeQuery":
         self.limit_n = n
         return self
 
-    def order(self, column: str) -> "FakeQuery":
-        self.order_by = column
+    def range(self, start: int, end: int) -> "FakeQuery":
+        self.offset_n, self.limit_n = start, end - start + 1
+        return self
+
+    def order(self, column: str, desc: bool = False) -> "FakeQuery":
+        self.order_by, self.order_desc = column, desc
         return self
 
     # execution -------------------------------------------------------------
     def _match(self, row: dict[str, Any]) -> bool:
-        return all(row.get(column) == value for column, value in self.filters)
+        return all(row.get(column) == value for column, value in self.filters) and all(
+            row.get(column) in values for column, values in self.in_filters
+        )
 
     def execute(self) -> Result:
         failure = self.db.failures.get((self.table_name, self.op))
@@ -70,7 +83,8 @@ class FakeQuery:
         if self.op == "select":
             found = [copy.deepcopy(row) for row in rows if self._match(row)]
             if self.order_by:
-                found.sort(key=lambda row: row.get(self.order_by) or "")
+                found.sort(key=lambda row: row.get(self.order_by) or "", reverse=self.order_desc)
+            found = found[self.offset_n :]
             if self.limit_n is not None:
                 found = found[: self.limit_n]
             return Result(found)
