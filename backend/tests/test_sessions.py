@@ -24,7 +24,12 @@ client = TestClient(app)
 @pytest.fixture
 def db():
     fake = FakeSupabase()
-    targets = ("app.routers.sessions.get_supabase", "app.agents.store.get_supabase", "app.auth.get_supabase")
+    targets = (
+        "app.routers.sessions.get_supabase",
+        "app.agents.store.get_supabase",
+        "app.auth.get_supabase",
+        "app.joint_store.get_supabase",
+    )
     patches = [patch(target, return_value=fake) for target in targets]
     for item in patches:
         item.start()
@@ -403,10 +408,3 @@ def test_messages_rejected_after_intake(db, as_party):
     _session(db, status="building_joint")
     response = client.post("/api/sessions/sess_abc/messages", json={"content": "Hello"})
     assert response.status_code == 409
-
-
-def test_resolve_session(db, as_party):
-    _session(db, status="joint_review")
-    response = client.post("/api/sessions/sess_abc/resolve")
-    assert response.status_code == 200
-    assert response.json()["status"] == "resolved"

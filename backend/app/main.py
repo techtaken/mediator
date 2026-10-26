@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.routers.admin import router as admin_router
+from app.routers.joint import router as joint_router
 from app.routers.sessions import router as sessions_router
 
 settings = get_settings()
@@ -16,6 +17,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(sessions_router)
+app.include_router(joint_router)
 app.include_router(admin_router)
 
 

@@ -71,6 +71,53 @@ class ApproveShareBody(BaseModel):
     text: str = Field(min_length=20, max_length=1200)
 
 
+class IdeaOut(BaseModel):
+    id: str
+    text: str
+    source: Literal["mediator", "you", "them"]
+    my_response: Literal["yes", "change", "no"] | None = None
+    my_note: str | None = None
+    other_responded: bool = False
+    # Only revealed once this party has answered, so nobody anchors on the other.
+    other_response: Literal["yes", "change", "no"] | None = None
+    other_note: str | None = None
+    agreed: bool = False
+
+
+class AgreementOut(BaseModel):
+    version: int
+    summary: str | None = None
+    terms: list[str]
+    flags: list[str] = Field(default_factory=list)
+    signed_by_me_at: str | None = None
+    signed_by_them_at: str | None = None
+    fully_signed: bool = False
+    created_at: str | None = None
+
+
+class JointStateOut(BaseModel):
+    ideas: list[IdeaOut]
+    agreed_count: int
+    agreement: AgreementOut | None = None
+
+
+class SuggestIdeaBody(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    text: str = Field(min_length=10, max_length=300)
+
+
+class RespondBody(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    response: Literal["yes", "change", "no"]
+    note: str | None = Field(default=None, max_length=300)
+
+
+class SignBody(BaseModel):
+    version: int
+
+
 class JointSummaryOut(BaseModel):
     user_a_perspective: str
     user_b_perspective: str

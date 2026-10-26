@@ -23,6 +23,7 @@ from app.agents.store import (
     state_version,
 )
 from app.auth import Actor, load_session, require_logged_in, resolve_actor
+from app.joint_store import seed_ideas
 from app.config import get_settings
 from app.db import get_supabase
 from app.safety import HELP_MESSAGE, HELPLINES, PAUSED_FOR_OTHER_MESSAGE, is_crisis_or_severe_harm, with_helplines
@@ -260,6 +261,7 @@ def _maybe_build_summary(session: dict) -> None:
             },
             on_conflict="session_id",
         ).execute()
+        seed_ideas(sid, built["compromises"])
         supabase.table("sessions").update({"status": "joint_review"}).eq("id", sid).execute()
     except Exception as exc:
         logger.exception("joint build failed for %s", sid)
@@ -538,18 +540,3 @@ def get_summary(ctx: tuple[dict, Actor] = Depends(get_actor)):
         compromises=list(compromises),
         created_at=row["created_at"],
     )
-
-
-@router.post("/sessions/{session_id}/resolve", response_model=SessionOut)
-def resolve_session(ctx: tuple[dict, Actor] = Depends(get_actor)):
-    session, actor = ctx
-    if session["status"] != "joint_review":
-        raise HTTPException(status_code=409, detail="Joint view is not open yet.")
-    updated = (
-        get_supabase()
-        .table("sessions")
-        .update({"status": "resolved"})
-        .eq("id", session["id"])
-        .execute()
-    )
-    return _session_out(updated.data[0], actor)

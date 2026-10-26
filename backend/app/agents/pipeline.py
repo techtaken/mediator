@@ -570,6 +570,39 @@ def share_severity(safety: dict[str, Any]) -> int:
     return _severity(safety)
 
 
+def summarize_agreement(
+    *,
+    state: dict[str, Any],
+    terms: list[str],
+    caller: AgentCaller = call_agent,
+) -> dict[str, Any]:
+    """A neutral summary and "make this specific" flags for an agreement.
+
+    The terms themselves are never sent back through a model: the agreement
+    lists them word for word. Anything that fails its check is left out.
+    """
+    view = shared_view(state)
+    try:
+        result = caller(
+            "DRAFTER",
+            {
+                "APPROVED_SHARES": dumps(view.get("approved_shares") or {}),
+                "AGREED_TERMS": dumps([{"id": index + 1, "text": text} for index, text in enumerate(terms)]),
+            },
+        )
+    except Exception:
+        logger.exception("agreement drafter failed")
+        return {"summary": None, "flags": []}
+
+    summary = str(result.get("summary") or "").strip() or None
+    if summary and _check_outbound(summary, state, "both", caller, view)[0] is not False:
+        summary = None
+    flags = [str(flag).strip() for flag in result.get("flags") or [] if str(flag).strip()]
+    if flags and _check_outbound("\n".join(flags), state, "both", caller, view)[0] is not False:
+        flags = []
+    return {"summary": summary, "flags": flags}
+
+
 def run_joint_pipeline(
     *,
     state: dict[str, Any],

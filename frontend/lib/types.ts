@@ -34,6 +34,37 @@ export type ChatMessage = {
   created_at: string;
 };
 
+export type IdeaResponse = "yes" | "change" | "no";
+
+export type JointIdea = {
+  id: string;
+  text: string;
+  source: "mediator" | "you" | "them";
+  my_response: IdeaResponse | null;
+  my_note: string | null;
+  other_responded: boolean;
+  other_response: IdeaResponse | null;
+  other_note: string | null;
+  agreed: boolean;
+};
+
+export type Agreement = {
+  version: number;
+  summary: string | null;
+  terms: string[];
+  flags: string[];
+  signed_by_me_at: string | null;
+  signed_by_them_at: string | null;
+  fully_signed: boolean;
+  created_at: string | null;
+};
+
+export type JointState = {
+  ideas: JointIdea[];
+  agreed_count: number;
+  agreement: Agreement | null;
+};
+
 export type JointSummary = {
   user_a_perspective: string;
   user_b_perspective: string;

@@ -1,7 +1,7 @@
 const STEPS = ["Talk privately", "Share", "Joint view"] as const;
 
-/** Three-step progress indicator. `current` is 0-based. */
-export function Steps({ current }: { current: 0 | 1 | 2 }) {
+/** Three-step progress indicator. `current` is 0-based; 3 means all done. */
+export function Steps({ current }: { current: 0 | 1 | 2 | 3 }) {
   return (
     <ol className="mt-3 flex items-center gap-2 text-[11px] font-medium tracking-wide uppercase" aria-label="Progress">
       {STEPS.map((label, index) => {

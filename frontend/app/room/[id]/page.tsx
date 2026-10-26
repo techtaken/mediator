@@ -9,17 +9,17 @@ import { ShareReview } from "@/components/room/ShareReview";
 import { Steps } from "@/components/room/Steps";
 import { WaitingPanel } from "@/components/room/WaitingPanel";
 import {
+  fetchJoint,
   fetchMessages,
   fetchSession,
   fetchSummary,
   getInviteToken,
-  markResolved,
   retryJoint,
   sendMessage,
   withdrawShare,
   type AuthOpts,
 } from "@/lib/api";
-import type { ChatMessage, JointSummary, Session } from "@/lib/types";
+import type { ChatMessage, JointState, JointSummary, Session } from "@/lib/types";
 import { useAuth } from "@/lib/useAuth";
 
 const POLL_MS = 2500;
@@ -34,17 +34,21 @@ async function loadRoom(id: string, auth: AuthOpts) {
   const session = await fetchSession(id, auth);
   const messages = await fetchMessages(id, auth);
   let summary: JointSummary | null = null;
+  let joint: JointState | null = null;
   if (session.status === "joint_review" || session.status === "resolved") {
-    summary = await fetchSummary(id, auth).catch(() => null);
+    [summary, joint] = await Promise.all([
+      fetchSummary(id, auth).catch(() => null),
+      fetchJoint(id, auth).catch(() => null),
+    ]);
   }
-  return { session, messages, summary };
+  return { session, messages, summary, joint };
 }
 
-function currentStep(session: Session | null, reviewing: boolean): 0 | 1 | 2 {
+function currentStep(session: Session | null, reviewing: boolean): 0 | 1 | 2 | 3 {
   if (!session || session.status === "intake") {
     return reviewing || session?.my_share ? 1 : 0;
   }
-  return 2;
+  return session.status === "resolved" ? 3 : 2;
 }
 
 export default function RoomPage({ params }: { params: Promise<{ id: string }> }) {
@@ -58,6 +62,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
   const [session, setSession] = useState<Session | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [summary, setSummary] = useState<JointSummary | null>(null);
+  const [joint, setJoint] = useState<JointState | null>(null);
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState<string | null>(null);
   // How many identical messages from this person existed when `pending` was sent.
@@ -80,6 +85,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
           setSession(room.session);
           setMessages(room.messages);
           if (room.summary) setSummary(room.summary);
+          if (room.joint) setJoint(room.joint);
           setError("");
         })
         .catch((err: unknown) => {
@@ -189,8 +195,12 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
       <JointView
         session={session}
         summary={summary}
-        busy={busy}
-        onResolve={() => void run(() => markResolved(id, auth))}
+        joint={joint}
+        auth={auth}
+        onJoint={(next) => {
+          setJoint(next);
+          setRefreshKey((n) => n + 1);
+        }}
       />
     );
   } else if (session.my_share) {

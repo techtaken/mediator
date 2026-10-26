@@ -24,7 +24,7 @@ CLAIMS = {
 @pytest.fixture
 def db():
     fake = FakeSupabase()
-    targets = ("app.routers.admin.get_supabase", "app.auth.get_supabase")
+    targets = ("app.routers.admin.get_supabase", "app.auth.get_supabase", "app.joint_store.get_supabase")
     patches = [patch(target, return_value=fake) for target in targets]
     for item in patches:
         item.start()
@@ -127,6 +127,7 @@ def test_detail_shows_both_rooms_memory_and_safety(db):
     assert data["state"]["safety"]["flags"]["B"]["severity"] == 2
     assert "invite_token_b" not in data["session"] and "mediation_state" not in data["session"]
     assert data["joint_summary"] is None
+    assert data["joint"] == {"ideas": [], "responses": [], "agreement": None}
 
 
 def test_every_view_is_recorded_with_the_admin(db):

@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.auth import Admin, load_session, require_admin
 from app.db import get_supabase
+from app.joint_store import get_agreement, list_ideas, list_responses
 
 logger = logging.getLogger(__name__)
 
@@ -136,4 +137,9 @@ def session_detail(session_id: str, admin: Admin = Depends(require_admin)):
         "state": session.get("mediation_state") or {},
         "audit_events": audit,
         "joint_summary": summary[0] if summary else None,
+        "joint": {
+            "ideas": list_ideas(session_id),
+            "responses": list_responses(session_id),
+            "agreement": get_agreement(session_id),
+        },
     }

@@ -48,6 +48,11 @@ export type AdminSessionDetail = {
   private_memories: Partial<Record<"user_a" | "user_b", PrivateMemory>>;
   state: Record<string, unknown>;
   audit_events: AuditEvent[];
+  joint: {
+    ideas: { id: string; text: string; source: string; position: number }[];
+    responses: { idea_id: string; party_role: "user_a" | "user_b"; response: string; note: string | null }[];
+    agreement: Record<string, unknown> | null;
+  };
   joint_summary: {
     user_a_perspective: string;
     user_b_perspective: string;

@@ -191,6 +191,21 @@ class HandoffOut(_Out):
         return "" if value is None else str(value)
 
 
+class DrafterOut(_Out):
+    summary: str = ""
+    flags: list[str] = Field(default_factory=list)
+
+    @field_validator("summary", mode="before")
+    @classmethod
+    def _summary(cls, value: Any) -> str:
+        return "" if value is None else str(value)
+
+    @field_validator("flags", mode="before")
+    @classmethod
+    def _flags(cls, value: Any) -> list[str]:
+        return [str(item) for item in _as_list(value) if item][:4]
+
+
 class ShareDraftOut(_Out):
     summary: str
     left_out: list[str] = Field(default_factory=list)
@@ -211,6 +226,7 @@ ROLE_SCHEMAS: dict[str, type[BaseModel]] = {
     "OPTIONS": OptionsOut,
     "HANDOFF": HandoffOut,
     "SHARE_DRAFTER": ShareDraftOut,
+    "DRAFTER": DrafterOut,
 }
 
 

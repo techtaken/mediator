@@ -149,6 +149,38 @@ export default function AdminSessionPage({ params }: { params: Promise<{ id: str
       </section>
 
       <section>
+        <h2 className="font-semibold">Joint session · ideas ({data.joint.ideas.length})</h2>
+        <table className="mt-2 w-full border-collapse text-left text-xs">
+          <thead>
+            <tr className="border-b">
+              <th className="p-1">Idea</th>
+              <th className="p-1">From</th>
+              <th className="p-1">A</th>
+              <th className="p-1">B</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.joint.ideas.map((idea) => {
+              const answer = (party: "user_a" | "user_b") => {
+                const row = data.joint.responses.find((r) => r.idea_id === idea.id && r.party_role === party);
+                return row ? `${row.response}${row.note ? ` — ${row.note}` : ""}` : "—";
+              };
+              return (
+                <tr key={idea.id} className="border-b align-top">
+                  <td className="p-1">{idea.text}</td>
+                  <td className="p-1">{idea.source}</td>
+                  <td className="p-1">{answer("user_a")}</td>
+                  <td className="p-1">{answer("user_b")}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        <h3 className="mt-3 font-semibold">Agreement</h3>
+        {data.joint.agreement ? <Json value={data.joint.agreement} /> : <p className="mt-1 text-muted">None yet.</p>}
+      </section>
+
+      <section>
         <h2 className="font-semibold">Audit trail ({audit.length})</h2>
         <table className="mt-2 w-full border-collapse text-left text-xs">
           <thead>

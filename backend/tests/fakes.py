@@ -49,6 +49,10 @@ class FakeQuery:
         self.op, self.payload, self.on_conflict = "upsert", payload, on_conflict
         return self
 
+    def delete(self) -> "FakeQuery":
+        self.op = "delete"
+        return self
+
     def eq(self, column: str, value: Any) -> "FakeQuery":
         self.filters.append((column, value))
         return self
@@ -100,6 +104,10 @@ class FakeQuery:
                     row.update(copy.deepcopy(self.payload))
                     changed.append(copy.deepcopy(row))
             return Result(changed)
+        if self.op == "delete":
+            removed = [copy.deepcopy(row) for row in rows if self._match(row)]
+            rows[:] = [row for row in rows if not self._match(row)]
+            return Result(removed)
         if self.op == "upsert":
             keys = [key.strip() for key in (self.on_conflict or "id").split(",")]
             for row in rows:

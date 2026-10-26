@@ -1,4 +1,4 @@
-import type { ChatMessage, JointSummary, Session, ShareDraft } from "./types";
+import type { ChatMessage, IdeaResponse, JointState, JointSummary, Session, ShareDraft } from "./types";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -97,9 +97,34 @@ export function fetchSummary(id: string, auth: AuthOpts) {
   return request<JointSummary>(`/api/sessions/${id}/summary`, { ...auth });
 }
 
-export function markResolved(id: string, auth: AuthOpts) {
-  return request<Session>(`/api/sessions/${id}/resolve`, {
+export function fetchJoint(id: string, auth: AuthOpts) {
+  return request<JointState>(`/api/sessions/${id}/joint`, { ...auth });
+}
+
+export function suggestIdea(id: string, text: string, auth: AuthOpts) {
+  return request<JointState>(`/api/sessions/${id}/ideas`, {
     method: "POST",
+    body: JSON.stringify({ text }),
+    ...auth,
+  });
+}
+
+export function respondToIdea(id: string, ideaId: string, response: IdeaResponse, note: string | null, auth: AuthOpts) {
+  return request<JointState>(`/api/sessions/${id}/ideas/${ideaId}/response`, {
+    method: "POST",
+    body: JSON.stringify({ response, note }),
+    ...auth,
+  });
+}
+
+export function draftAgreement(id: string, auth: AuthOpts) {
+  return request<JointState>(`/api/sessions/${id}/agreement/draft`, { method: "POST", ...auth });
+}
+
+export function signAgreement(id: string, version: number, auth: AuthOpts) {
+  return request<JointState>(`/api/sessions/${id}/agreement/sign`, {
+    method: "POST",
+    body: JSON.stringify({ version }),
     ...auth,
   });
 }
