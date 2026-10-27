@@ -17,6 +17,7 @@ import {
   askForPerson,
   deleteMyData,
   deleteRoom,
+  fetchFollowUp,
   fetchJoint,
   fetchMessages,
   fetchSession,
@@ -26,13 +27,23 @@ import {
   retryJoint,
   rotateInvite,
   sendMessage,
+  setLanguage,
   withdrawShare,
   type AuthOpts,
 } from "@/lib/api";
-import type { ChatMessage, JointState, JointSummary, Session } from "@/lib/types";
+import { subscribeRoom } from "@/lib/live";
+import type { ChatMessage, FollowUp, JointState, JointSummary, Language, Session } from "@/lib/types";
 import { useAuth } from "@/lib/useAuth";
 
+// Polling is the fallback; with a live stream connected it only runs as a slow safety net.
 const POLL_MS = 2500;
+const SAFETY_POLL_MS = 30000;
+
+const PLACEHOLDER: Record<Language, string> = {
+  en: "Type your message",
+  hinglish: "Apni baat likhiye",
+  hi: "अपनी बात लिखिए",
+};
 const noopSubscribe = () => () => {};
 
 function whatsappHref(link: string) {
@@ -45,13 +56,15 @@ async function loadRoom(id: string, auth: AuthOpts) {
   const messages = await fetchMessages(id, auth);
   let summary: JointSummary | null = null;
   let joint: JointState | null = null;
+  let followUp: FollowUp | null = null;
   if (session.status === "joint_review" || session.status === "resolved") {
-    [summary, joint] = await Promise.all([
+    [summary, joint, followUp] = await Promise.all([
       fetchSummary(id, auth).catch(() => null),
       fetchJoint(id, auth).catch(() => null),
+      session.status === "resolved" ? fetchFollowUp(id, auth).catch(() => null) : Promise.resolve(null),
     ]);
   }
-  return { session, messages, summary, joint };
+  return { session, messages, summary, joint, followUp };
 }
 
 function shortDate(value: string | null) {
@@ -78,6 +91,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [summary, setSummary] = useState<JointSummary | null>(null);
   const [joint, setJoint] = useState<JointState | null>(null);
+  const [followUp, setFollowUp] = useState<FollowUp | null>(null);
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState<string | null>(null);
   // How many identical messages from this person existed when `pending` was sent.
@@ -96,14 +110,18 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
   useEffect(() => {
     if (!canLoad) return;
     let cancelled = false;
-    const tick = () =>
-      loadRoom(id, auth)
+    let live = false;
+    let lastLoad = 0;
+    const tick = () => {
+      lastLoad = Date.now();
+      return loadRoom(id, auth)
         .then((room) => {
           if (cancelled) return;
           setSession(room.session);
           setMessages(room.messages);
           if (room.summary) setSummary(room.summary);
           if (room.joint) setJoint(room.joint);
+          setFollowUp(room.followUp);
           setError("");
         })
         .catch((err: unknown) => {
@@ -113,11 +131,27 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
           }
           setError(err instanceof Error ? err.message : "Could not load room");
         });
+    };
     void tick();
-    const timer = setInterval(() => void tick(), POLL_MS);
+    const timer = setInterval(() => {
+      if (!live || Date.now() - lastLoad > SAFETY_POLL_MS) void tick();
+    }, POLL_MS);
+    const stop = subscribeRoom(id, auth, {
+      onChange: () => {
+        // The first event after connecting usually repeats what we just loaded.
+        if (!cancelled && Date.now() - lastLoad > 400) void tick();
+      },
+      onGone: () => {
+        if (!cancelled) setGone("deleted");
+      },
+      onStatus: (connected) => {
+        live = connected;
+      },
+    });
     return () => {
       cancelled = true;
       clearInterval(timer);
+      stop();
     };
   }, [canLoad, id, auth, refreshKey]);
 
@@ -253,16 +287,28 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
   } else if (session.status === "halted") {
     body = <HaltPanel session={session} />;
   } else if (needsConsent) {
-    body = <ConsentCard retentionDays={session.retention_days} onAccept={() => run(() => acceptConsent(id, auth))} />;
+    body = (
+      <ConsentCard
+        retentionDays={session.retention_days}
+        language={session.my_language}
+        onLanguage={(language) => run(() => setLanguage(id, language, auth))}
+        onAccept={() => run(() => acceptConsent(id, auth))}
+      />
+    );
   } else if (session.status !== "intake") {
     body = (
       <JointView
         session={session}
         summary={summary}
         joint={joint}
+        followUp={followUp}
         auth={auth}
         onJoint={(next) => {
           setJoint(next);
+          setRefreshKey((n) => n + 1);
+        }}
+        onFollowUp={(next) => {
+          setFollowUp(next);
           setRefreshKey((n) => n + 1);
         }}
       />
@@ -290,7 +336,15 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
           </Link>
           <div className="flex items-center gap-2">
             <p className="text-xs text-muted">{isA ? "Your private room" : "Invited · private room"}</p>
-            {session ? <RoomMenu canStop={canStop} isA={isA} onAction={onMenu} /> : null}
+            {session ? (
+              <RoomMenu
+                canStop={canStop}
+                isA={isA}
+                language={session.my_language}
+                onLanguage={(language) => run(() => setLanguage(id, language, auth))}
+                onAction={onMenu}
+              />
+            ) : null}
           </div>
         </div>
         {session?.status !== "halted" ? <Steps current={currentStep(session, reviewing)} /> : null}
@@ -382,7 +436,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
             <input
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
-              placeholder="Type in Hinglish or English"
+              placeholder={session?.my_language ? PLACEHOLDER[session.my_language] : "Type in English, Hinglish or Hindi"}
               aria-label="Your message"
               maxLength={4000}
               className="flex-1 rounded-full border border-ink/10 bg-card px-4 py-3 text-base outline-none focus:border-terracotta"

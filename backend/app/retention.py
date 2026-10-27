@@ -48,8 +48,8 @@ def delete_party_data(session_id: str, party_role: str, *, keep_approved_share: 
     return {"messages": len(removed.data or [])}
 
 
-# Phase 3 tables holding one person's private answers, keyed by party_role.
-PARTY_PRIVATE_TABLES: tuple[str, ...] = ()
+# Tables holding one person's private answers, keyed by party_role.
+PARTY_PRIVATE_TABLES: tuple[str, ...] = ("followups", "reality_checks")
 
 
 def delete_room(session_id: str) -> None:

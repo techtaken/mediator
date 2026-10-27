@@ -142,6 +142,20 @@ export default function AdminSessionPage({ params }: { params: Promise<{ id: str
           <dd>{session.halted_for ? `${session.halt_kind ?? "halted"} for ${session.halted_for}` : "—"}</dd>
           <dt className="text-muted">Stage</dt>
           <dd>{String((state as { stage?: unknown }).stage ?? "—")}</dd>
+          <dt className="text-muted">Style</dt>
+          <dd>{String((state as { style?: unknown }).style ?? "—")}</dd>
+          <dt className="text-muted">Languages A / B</dt>
+          <dd>
+            {String(session.language_a ?? "auto")} / {String(session.language_b ?? "auto")}
+          </dd>
+          <dt className="text-muted">Referral</dt>
+          <dd>
+            {session.halt_kind === "referral"
+              ? session.referral_handled_at
+                ? `handled by ${String(session.referral_handled_by)}`
+                : "waiting in the referral inbox"
+              : "—"}
+          </dd>
         </dl>
       </div>
 
@@ -224,6 +238,36 @@ export default function AdminSessionPage({ params }: { params: Promise<{ id: str
         </table>
         <h3 className="mt-3 font-semibold">Agreement</h3>
         {data.joint.agreement ? <Json value={data.joint.agreement} /> : <p className="mt-1 text-muted">None yet.</p>}
+      </section>
+
+      <section>
+        <h2 className="font-semibold">Check-ins ({data.followups?.length ?? 0})</h2>
+        {data.followups?.length ? (
+          <table className="mt-2 w-full border-collapse text-left text-xs">
+            <thead>
+              <tr className="border-b">
+                <th className="p-1">Round</th>
+                <th className="p-1">Person</th>
+                <th className="p-1">Status</th>
+                <th className="p-1">Due</th>
+                <th className="p-1">Answers</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.followups.map((row) => (
+                <tr key={row.id} className="border-b align-top">
+                  <td className="p-1">{row.round}</td>
+                  <td className="p-1">{row.party_role === "user_a" ? "A" : "B"}</td>
+                  <td className="p-1">{row.status}</td>
+                  <td className="p-1 whitespace-nowrap">{when(row.due_at)}</td>
+                  <td className="p-1">{row.answers ? JSON.stringify(row.answers) : "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <p className="mt-1 text-muted">None.</p>
+        )}
       </section>
 
       <section>

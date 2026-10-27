@@ -52,7 +52,12 @@ export default function AdminSessionsPage() {
   return (
     <main className="p-6 text-sm">
       <h1 className="text-xl font-semibold">Admin · Sessions</h1>
-      <p className="mt-1 text-muted">Read-only. Opening a session is recorded in its audit log.</p>
+      <p className="mt-1 text-muted">
+        Read-only. Opening a session is recorded in its audit log.{" "}
+        <Link href="/admin/referrals" className="text-ink underline">
+          Referral inbox →
+        </Link>
+      </p>
 
       <div className="mt-4 flex flex-wrap items-center gap-3">
         <label>

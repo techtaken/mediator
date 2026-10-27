@@ -2,6 +2,7 @@ import pytest
 
 from app.agents.llm import call_agent, dumps
 from app.agents.pipeline import CAUCUS_FALLBACK, NEUTRAL_FALLBACK, handle_party_turn
+from app.agents.prompts import language_instruction
 from app.agents.state import empty_private, new_shared_state, shared_view
 from tests.conftest import has_real_gemini_key
 
@@ -23,9 +24,28 @@ def test_caucus_agent_returns_valid_reply():
             "INSTRUCTION": "Listen and reflect.",
             "RELATIONSHIP_CONTEXT": "Partners sharing a home",
             "DISPUTE_TOPIC": "Not given.",
+            "LANGUAGE": language_instruction(None),
         },
     )
     assert len(out["reply_to_party"].strip()) > 20
+
+
+def test_caucus_replies_in_devanagari_when_asked():
+    state = new_shared_state("live-4", "Brothers")
+    out = call_agent(
+        "CAUCUS",
+        {
+            "PARTY_ID": "A",
+            "SHARED_STATE_JSON": dumps(shared_view(state)),
+            "PRIVATE_MEMORY": dumps(empty_private()),
+            "LATEST_EVENT": dumps({"party": "A", "message": "My brother wants to sell our father's land."}),
+            "INSTRUCTION": "Listen and reflect.",
+            "RELATIONSHIP_CONTEXT": "Brothers",
+            "DISPUTE_TOPIC": "Not given.",
+            "LANGUAGE": language_instruction("hi"),
+        },
+    )
+    assert any("\u0900" <= char <= "\u097f" for char in out["reply_to_party"])
 
 
 def test_safety_guardian_flags_a_threat():

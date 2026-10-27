@@ -21,7 +21,10 @@ export type Session = {
   other_joined: boolean;
   retention_days: number;
   my_data_deleted: boolean;
+  my_language: Language | null;
 };
+
+export type Language = "en" | "hinglish" | "hi";
 
 export type RoomSummary = {
   id: string;
@@ -60,6 +63,12 @@ export type JointIdea = {
   other_response: IdeaResponse | null;
   other_note: string | null;
   agreed: boolean;
+  my_questions: RealityQuestion[];
+};
+
+export type RealityQuestion = {
+  type: "alternative" | "practical" | "their_view";
+  question: string;
 };
 
 export type Agreement = {
@@ -77,6 +86,35 @@ export type JointState = {
   ideas: JointIdea[];
   agreed_count: number;
   agreement: Agreement | null;
+  reopened: boolean;
+};
+
+export type Translation = {
+  language: Language;
+  original: string;
+  translation: string | null;
+};
+
+export type TermStatus = "kept" | "partly" | "not_kept";
+
+export type CheckInAnswers = {
+  term_status: { term: number; status: TermStatus }[];
+  satisfaction: number;
+  new_issues: string | null;
+  wants_to_talk: boolean;
+};
+
+export type FollowUp = {
+  status: "none" | "scheduled" | "open" | "answered";
+  round: number;
+  due_at: string | null;
+  terms: string[];
+  my_answers: CheckInAnswers | null;
+  reply: string | null;
+  other_answered: boolean;
+  other_checking_in: boolean;
+  accounts_differ: number[];
+  can_reopen: boolean;
 };
 
 export type JointSummary = {

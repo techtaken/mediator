@@ -26,10 +26,12 @@ type Props = {
   index: number;
   locked: boolean;
   onAnswer: (response: IdeaResponse, note: string | null) => Promise<void>;
+  onThink?: () => Promise<void>;
 };
 
-export function IdeaCard({ idea, index, locked, onAnswer }: Props) {
+export function IdeaCard({ idea, index, locked, onAnswer, onThink }: Props) {
   const [noteOpen, setNoteOpen] = useState(false);
+  const [thinking, setThinking] = useState(false);
   const [note, setNote] = useState(idea.my_note ?? "");
   const [saving, setSaving] = useState(false);
 
@@ -130,6 +132,32 @@ export function IdeaCard({ idea, index, locked, onAnswer }: Props) {
             </button>
           </div>
         </div>
+      ) : null}
+
+      {idea.my_questions.length ? (
+        <div className="mt-3 rounded-2xl bg-paper px-3 py-2.5">
+          <p className="text-[12px] font-medium tracking-[0.12em] text-muted uppercase">Think it through · only you see this</p>
+          <ul className="mt-1.5 space-y-1.5 text-[14px] leading-snug text-ink">
+            {idea.my_questions.map((item) => (
+              <li key={item.type} className="flex gap-2">
+                <span aria-hidden className="text-terracotta">?</span>
+                <span>{item.question}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : onThink && !locked ? (
+        <button
+          type="button"
+          disabled={thinking}
+          onClick={() => {
+            setThinking(true);
+            void onThink().finally(() => setThinking(false));
+          }}
+          className="mt-2.5 text-[13px] text-teal underline-offset-4 hover:underline disabled:opacity-50"
+        >
+          {thinking ? "Thinking…" : "Think it through privately"}
+        </button>
       ) : null}
 
       <div className="mt-3 space-y-1 text-[13px] leading-snug">

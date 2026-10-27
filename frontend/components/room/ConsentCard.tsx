@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import { LanguagePicker } from "@/components/room/LanguagePicker";
+import type { Language } from "@/lib/types";
 
 function points(retentionDays: number): { title: string; body: string }[] {
   return [
@@ -34,7 +36,14 @@ function points(retentionDays: number): { title: string; body: string }[] {
 }
 
 /** Shown before a person's first message. Accepting is recorded on the server. */
-export function ConsentCard({ retentionDays, onAccept }: { retentionDays: number; onAccept: () => Promise<void> }) {
+type Props = {
+  retentionDays: number;
+  language: Language | null;
+  onLanguage: (language: Language) => Promise<void>;
+  onAccept: () => Promise<void>;
+};
+
+export function ConsentCard({ retentionDays, language, onLanguage, onAccept }: Props) {
   const [busy, setBusy] = useState(false);
 
   async function accept() {
@@ -62,6 +71,12 @@ export function ConsentCard({ retentionDays, onAccept }: { retentionDays: number
           </li>
         ))}
       </ul>
+
+      <div className="mt-5 rounded-3xl border border-ink/10 px-4 py-3.5">
+        <p className="text-[15px] text-ink">Which language should the mediator reply in?</p>
+        <LanguagePicker value={language} onChange={onLanguage} />
+        <p className="mt-2 text-[13px] text-muted">You can change this later from Options.</p>
+      </div>
 
       <button
         type="button"

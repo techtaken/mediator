@@ -62,6 +62,15 @@ export type AdminSessionDetail = {
   state: Record<string, unknown>;
   audit_events: AuditEvent[];
   agent_calls: CallStats;
+  followups: {
+    id: string;
+    party_role: "user_a" | "user_b";
+    round: number;
+    status: string;
+    due_at: string;
+    answers: Record<string, unknown> | null;
+    reply: string | null;
+  }[];
   joint: {
     ideas: { id: string; text: string; source: string; position: number }[];
     responses: { idea_id: string; party_role: "user_a" | "user_b"; response: string; note: string | null }[];
@@ -84,6 +93,42 @@ export function fetchAdminSessions(
   params.set("limit", String(opts.limit ?? 50));
   params.set("offset", String(opts.offset ?? 0));
   return request<AdminSessionList>(`/api/admin/sessions?${params}`, { accessToken });
+}
+
+export type ReferralRow = {
+  id: string;
+  status: SessionStatus;
+  topic: string | null;
+  relationship_context: string | null;
+  created_at: string;
+  updated_at: string | null;
+  halted_for: "user_a" | "user_b" | null;
+  referral_brief_at: string | null;
+  referral_handled_at: string | null;
+  referral_handled_by: string | null;
+};
+
+export type HandoffBrief = Record<string, unknown> & {
+  urgency?: string;
+  handoff_reason?: string;
+  dispute_summary?: string;
+  issues?: unknown[];
+  progress_so_far?: unknown[];
+  what_didnt_work?: unknown[];
+  suggested_starting_point?: string;
+};
+
+export function fetchReferrals(accessToken: string, handled?: boolean) {
+  const query = handled === undefined ? "" : `?handled=${handled}`;
+  return request<{ referrals: ReferralRow[] }>(`/api/admin/referrals${query}`, { accessToken });
+}
+
+export function generateBrief(id: string, accessToken: string) {
+  return request<{ brief: HandoffBrief }>(`/api/admin/referrals/${id}/brief`, { method: "POST", accessToken });
+}
+
+export function markReferralHandled(id: string, accessToken: string) {
+  return request<{ handled: boolean }>(`/api/admin/referrals/${id}/handled`, { method: "POST", accessToken });
 }
 
 export function fetchAdminSession(id: string, accessToken: string) {

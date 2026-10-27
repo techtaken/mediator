@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import { LanguagePicker } from "@/components/room/LanguagePicker";
+import type { Language } from "@/lib/types";
 
 export type RoomAction = "human" | "leave" | "delete_mine" | "delete_room";
 
@@ -34,6 +36,8 @@ const COPY: Record<RoomAction, { title: string; body: string; confirm: string; d
 type Props = {
   canStop: boolean;
   isA: boolean;
+  language: Language | null;
+  onLanguage: (language: Language) => Promise<void>;
   onAction: (action: RoomAction) => Promise<void>;
 };
 
@@ -51,7 +55,7 @@ function Option({ label, hint, danger, onClick }: { label: string; hint: string;
 }
 
 /** Options to stop or delete at any time: voluntary participation is a hard rule. */
-export function RoomMenu({ canStop, isA, onAction }: Props) {
+export function RoomMenu({ canStop, isA, language, onLanguage, onAction }: Props) {
   const [open, setOpen] = useState(false);
   const [confirming, setConfirming] = useState<RoomAction | null>(null);
   const [typed, setTyped] = useState("");
@@ -142,7 +146,11 @@ export function RoomMenu({ canStop, isA, onAction }: Props) {
             ) : (
               <>
                 <h2 className="font-[family-name:var(--font-display)] text-2xl text-ink">Options</h2>
-                <div className="mt-4 space-y-2.5">
+                <div className="mt-4 rounded-3xl bg-card px-4 py-3.5 shadow-[0_1px_0_rgba(36,28,22,0.08)]">
+                  <p className="text-[15px] text-ink">Mediator replies in</p>
+                  <LanguagePicker value={language} onChange={onLanguage} />
+                </div>
+                <div className="mt-2.5 space-y-2.5">
                   {canStop ? (
                     <>
                       <Option

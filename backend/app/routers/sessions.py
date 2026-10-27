@@ -1,9 +1,15 @@
+import asyncio
+import hashlib
+import json
 import logging
 import secrets
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
+from fastapi.responses import StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
 from app.agents.pipeline import check_share, draft_share, handle_party_turn, run_joint_pipeline, share_severity
 from app.agents.state import (
@@ -35,6 +41,7 @@ from app.schemas import (
     ApproveShareBody,
     CreateSessionBody,
     DeletedOut,
+    LanguageBody,
     JointSummaryOut,
     MessageOut,
     ReadyBody,
@@ -61,16 +68,56 @@ AI_DISCLOSURE = (
 )
 
 
-def welcome_a(topic: str | None) -> str:
+AI_DISCLOSURE_BY_LANGUAGE = {
+    "hinglish": (
+        "Main ek AI mediator hoon: main kisi ka paksh nahi leta, aur legal, medical ya "
+        "financial salah nahi de sakta. Aap kabhi bhi ruk sakte hain."
+    ),
+    "hi": "मैं एक AI मध्यस्थ हूँ: मैं किसी का पक्ष नहीं लेता, और कानूनी, चिकित्सा या आर्थिक सलाह नहीं दे सकता। आप कभी भी रुक सकते हैं।",
+}
+
+
+def welcome_a(topic: str | None, language: str | None = None) -> str:
+    if language == "hinglish":
+        about = f'Aapne yeh room is baare mein khola: "{topic}". Woh yeh line dekhenge, par yeh chat kabhi nahi.\n\n' if topic else ""
+        return (
+            "Yeh aapka private room hai. Doosra insaan ise padh nahi sakta.\n\n"
+            f"{about}{AI_DISCLOSURE_BY_LANGUAGE['hinglish']}\n\n"
+            "Bataiye kya hua."
+        )
+    if language == "hi":
+        about = f'आपने यह कमरा इस बारे में खोला: "{topic}"। वे यह पंक्ति देखेंगे, पर यह चैट कभी नहीं।\n\n' if topic else ""
+        return (
+            "यह आपका निजी कमरा है। दूसरा व्यक्ति इसे नहीं पढ़ सकता।\n\n"
+            f"{about}{AI_DISCLOSURE_BY_LANGUAGE['hi']}\n\n"
+            "बताइए क्या हुआ।"
+        )
     about = f'You opened this room about: "{topic}". They\'ll see that line, but never this chat.\n\n' if topic else ""
     return (
         "This is your private room. The other person can't read it.\n\n"
         f"{about}{AI_DISCLOSURE}\n\n"
-        "Tell me what happened, in English or Hinglish."
+        "Tell me what happened, in English, Hinglish or Hindi."
     )
 
 
-def welcome_b(topic: str | None) -> str:
+def welcome_b(topic: str | None, language: str | None = None) -> str:
+    if language == "hinglish":
+        about = (
+            f'Unhone yeh room is baare mein khola: "{topic}". Yeh unka nazariya hai. Yahan aap apni baat rakh sakte hain.\n\n'
+            if topic
+            else "Unhone yeh room aapke saath baat karne ke liye khola hai. Yahan aap apni baat rakh sakte hain.\n\n"
+        )
+        return (
+            "Yeh aapka private room hai. Jinhone aapko invite kiya, woh ise padh nahi sakte.\n\n"
+            f"{about}{AI_DISCLOSURE_BY_LANGUAGE['hinglish']}"
+        )
+    if language == "hi":
+        about = (
+            f'उन्होंने यह कमरा इस बारे में खोला: "{topic}"। यह उनका नज़रिया है। यहाँ आप अपनी बात रख सकते हैं।\n\n'
+            if topic
+            else "उन्होंने यह कमरा आपसे बात करने के लिए खोला है। यहाँ आप अपनी बात रख सकते हैं।\n\n"
+        )
+        return f"यह आपका निजी कमरा है। जिन्होंने आपको बुलाया है, वे इसे नहीं पढ़ सकते।\n\n{about}{AI_DISCLOSURE_BY_LANGUAGE['hi']}"
     about = (
         f'They opened this room about: "{topic}". That\'s how they see it. Here you can tell your side.\n\n'
         if topic
@@ -80,6 +127,10 @@ def welcome_b(topic: str | None) -> str:
         "This is your private room. The person who invited you can't read it.\n\n"
         f"{about}{AI_DISCLOSURE}"
     )
+
+
+def language_field(party_role: str) -> str:
+    return "language_a" if party_role == "user_a" else "language_b"
 
 
 def get_actor(
@@ -137,6 +188,7 @@ def _session_out(session: dict, actor: Actor) -> SessionOut:
         other_joined=_other_joined(session) if actor.party == "user_a" else True,
         retention_days=get_settings().retention_days,
         my_data_deleted=bool(session.get(_deleted_field(actor.party))),
+        my_language=session.get(language_field(actor.party)),
     )
 
 
@@ -433,6 +485,7 @@ def send_message(body: SendMessageBody, ctx: tuple[dict, Actor] = Depends(get_ac
                     private=load_private(session["id"], actor.party),
                     relationship_context=session.get("relationship_context") or "",
                     topic=session.get("topic"),
+                    language=session.get(language_field(actor.party)),
                 )
             persist_turn(session["id"], actor.party, turn.state, turn.private, state_version(session))
             break
@@ -499,6 +552,7 @@ def draft_my_share(ctx: tuple[dict, Actor] = Depends(get_actor)):
             private=private,
             topic=session.get("topic"),
             state=state,
+            language=session.get(language_field(actor.party)),
         )
     try:
         save_state(session["id"], state, state_version(session))
@@ -741,3 +795,138 @@ def delete_whole_room(ctx: tuple[dict, Actor] = Depends(get_actor)):
         raise HTTPException(status_code=403, detail="Only the person who opened the room can delete it.")
     delete_room(session["id"])
     return DeletedOut(deleted=True)
+
+
+@router.post("/sessions/{session_id}/language", response_model=SessionOut)
+def set_language(body: LanguageBody, ctx: tuple[dict, Actor] = Depends(get_actor)):
+    """This person's language for the mediator's replies and share draft.
+
+    If they haven't written anything yet, their welcome message is replaced
+    with the same welcome in that language.
+    """
+    session, actor = ctx
+    sid = session["id"]
+    supabase = get_supabase()
+    supabase.table("sessions").update({language_field(actor.party): body.language}).eq("id", sid).execute()
+    rows = (
+        supabase.table("messages")
+        .select("id, sender_role")
+        .eq("session_id", sid)
+        .eq("audience_role", actor.party)
+        .order("created_at")
+        .execute()
+        .data
+        or []
+    )
+    if rows and not any(row["sender_role"] == actor.party for row in rows) and rows[0]["sender_role"] == "ai":
+        welcome = welcome_a if actor.party == "user_a" else welcome_b
+        supabase.table("messages").update({"content": welcome(session.get("topic"), body.language)}).eq(
+            "id", rows[0]["id"]
+        ).execute()
+    return _session_out(load_session(sid), actor)
+
+
+# --- Live updates ----------------------------------------------------------
+
+SSE_POLL_SECONDS = 1.5
+SSE_KEEPALIVE_SECONDS = 15
+
+
+def _sse_limits() -> tuple[float, float]:
+    return float(get_settings().sse_max_seconds), SSE_POLL_SECONDS
+
+
+def _room_fingerprint(session_id: str, party_role: str) -> str:
+    """A hash of what this person can see in the room right now.
+
+    Only things already visible to them go in: never the other person's
+    message count, state version or other activity, so the timing of events
+    reveals nothing about what the other person is doing in private.
+    """
+    supabase = get_supabase()
+    session = load_session(session_id)
+    mine = (
+        supabase.table("messages").select("id").eq("session_id", session_id).eq("audience_role", party_role).execute().data
+        or []
+    )
+    parts: list = [
+        session["status"],
+        session.get("user_a_ready"),
+        session.get("user_b_ready"),
+        session.get("halted_for"),
+        session.get(_consent_field(party_role)),
+        session.get(language_field(party_role)),
+        session.get("invite_token_b") if party_role == "user_a" else None,
+        bool(session.get("consented_b_at")) if party_role == "user_a" else None,
+        len(mine),
+        mine[-1]["id"] if mine else None,
+    ]
+    if session["status"] in ("joint_review", "resolved", "building_joint"):
+        ideas = supabase.table("joint_ideas").select("id").eq("session_id", session_id).execute().data or []
+        answers = (
+            supabase.table("idea_responses").select("idea_id, party_role, response, note").eq("session_id", session_id).execute().data
+            or []
+        )
+        agreement = supabase.table("agreements").select("version, signed_a_at, signed_b_at").eq("session_id", session_id).execute().data
+        summary = supabase.table("joint_summaries").select("session_id").eq("session_id", session_id).execute().data
+        parts += [
+            sorted(row["id"] for row in ideas),
+            sorted((row["idea_id"], row["party_role"], row.get("response"), row.get("note")) for row in answers),
+            agreement,
+            bool(summary),
+        ]
+    if session["status"] == "resolved":
+        followups = (
+            supabase.table("followups").select("round, status, party_role").eq("session_id", session_id).execute().data or []
+        )
+        # The other person's check-in only shows as "answered or not".
+        parts.append(sorted((row["round"], row["party_role"], row["status"] == "answered") for row in followups))
+    return hashlib.sha256(json.dumps(parts, default=str).encode()).hexdigest()[:16]
+
+
+def _sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+@router.get("/sessions/{session_id}/events")
+async def room_events(request: Request, ctx: tuple[dict, Actor] = Depends(get_actor)):
+    """Server-sent events: a `change` event whenever this person's view changes.
+
+    Browsers can't send Authorization / X-Invite-Token with EventSource, so the
+    frontend reads this with fetch. The stream closes after SSE_MAX_SECONDS
+    (the client reconnects); clients fall back to polling if it fails.
+    """
+    session, actor = ctx
+    sid, party = session["id"], actor.party
+    max_seconds, poll = _sse_limits()
+
+    async def stream():
+        yield "retry: 3000\n\n"
+        last, started, beat = None, time.monotonic(), time.monotonic()
+        while time.monotonic() - started < max_seconds:
+            if await request.is_disconnected():
+                return
+            try:
+                fingerprint = await run_in_threadpool(_room_fingerprint, sid, party)
+            except HTTPException as exc:
+                if exc.status_code == 404:
+                    yield _sse("gone", {})
+                    return
+                fingerprint = last
+            except Exception:
+                logger.exception("live update check failed for %s", sid)
+                fingerprint = last
+            if fingerprint != last:
+                last, beat = fingerprint, time.monotonic()
+                yield _sse("change", {"v": fingerprint})
+            elif time.monotonic() - beat >= SSE_KEEPALIVE_SECONDS:
+                beat = time.monotonic()
+                yield ": keepalive\n\n"
+            await asyncio.sleep(poll)
+        yield _sse("reconnect", {})
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )

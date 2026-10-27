@@ -13,12 +13,14 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from app.agents.pipeline import check_share, share_severity, summarize_agreement
-from app.agents.state import party_code, record_safety_flag
+from app.agents.pipeline import check_share, reality_check, share_severity, summarize_agreement, translate_share
+from app.agents.state import append_audit, party_code, record_safety_flag
 from app.agents.store import load_state
 from app.agents.telemetry import track_calls
 from app.auth import Actor
+from app.config import get_settings
 from app.db import get_supabase
+from app.followup_store import days_field, schedule_followups
 from app.joint_store import (
     add_idea,
     agreed_idea_ids,
@@ -37,6 +39,7 @@ from app.routers.sessions import (
     _insert_message,
     _update_state,
     get_actor,
+    language_field,
 )
 from app.ratelimit import limit_writes
 from app.safety import with_helplines
@@ -44,9 +47,12 @@ from app.schemas import (
     AgreementOut,
     IdeaOut,
     JointStateOut,
+    Language,
+    RealityQuestionOut,
     RespondBody,
     SignBody,
     SuggestIdeaBody,
+    TranslationOut,
 )
 
 logger = logging.getLogger(__name__)
@@ -78,10 +84,21 @@ def _ensure_seeded(session_id: str) -> list[dict]:
     return list_ideas(session_id)
 
 
+def _my_questions(session_id: str, me: str) -> dict[str, list[dict]]:
+    rows = (
+        get_supabase().table("reality_checks").select("idea_id, questions").eq("session_id", session_id).eq(
+            "party_role", me
+        ).execute().data
+        or []
+    )
+    return {row["idea_id"]: list(row.get("questions") or []) for row in rows}
+
+
 def _joint_state(session_id: str, me: str) -> JointStateOut:
     other = _other(me)
     ideas = _ensure_seeded(session_id)
     responses = list_responses(session_id)
+    questions = _my_questions(session_id, me)
     by_key = {(row["idea_id"], row["party_role"]): row for row in responses}
     agreed = set(agreed_idea_ids(ideas, responses))
 
@@ -102,6 +119,7 @@ def _joint_state(session_id: str, me: str) -> JointStateOut:
                 other_response=theirs["response"] if (theirs and reveal) else None,
                 other_note=theirs.get("note") if (theirs and reveal) else None,
                 agreed=idea["id"] in agreed,
+                my_questions=[RealityQuestionOut(**item) for item in questions.get(idea["id"], [])],
             )
         )
 
@@ -120,7 +138,14 @@ def _joint_state(session_id: str, me: str) -> JointStateOut:
             fully_signed=bool(mine_at and theirs_at),
             created_at=agreement.get("created_at"),
         )
-    return JointStateOut(ideas=out, agreed_count=len(agreed), agreement=agreement_out)
+    session_rows = get_supabase().table("sessions").select("mediation_state").eq("id", session_id).limit(1).execute().data
+    state = (session_rows[0].get("mediation_state") if session_rows else None) or {}
+    return JointStateOut(
+        ideas=out,
+        agreed_count=len(agreed),
+        agreement=agreement_out,
+        reopened=bool(state.get("past_agreements")),
+    )
 
 
 def _screen_text(session: dict, actor: Actor, text: str) -> None:
@@ -240,11 +265,105 @@ def sign_agreement(body: SignBody, ctx: tuple[dict, Actor] = Depends(get_actor))
         raise HTTPException(status_code=409, detail="The agreement changed. Please read the new version before signing.")
 
     field = "signed_a_at" if actor.party == "user_a" else "signed_b_at"
+    if body.checkin_days is not None:
+        get_supabase().table("sessions").update({days_field(actor.party): body.checkin_days}).eq(
+            "id", session["id"]
+        ).execute()
     if not agreement.get(field):
         agreement[field] = now_iso()
         save_agreement(session["id"], {key: value for key, value in agreement.items() if key != "session_id"})
     if agreement.get("signed_a_at") and agreement.get("signed_b_at"):
-        get_supabase().table("sessions").update({"status": "resolved"}).eq("id", session["id"]).eq(
-            "status", "joint_review"
-        ).execute()
+        resolved = (
+            get_supabase()
+            .table("sessions")
+            .update({"status": "resolved"})
+            .eq("id", session["id"])
+            .eq("status", "joint_review")
+            .execute()
+        )
+        # Only the request that resolved the room schedules the check-ins.
+        if resolved.data:
+            signed_at = max(agreement["signed_a_at"], agreement["signed_b_at"])
+            schedule_followups(resolved.data[0], signed_at, get_settings().followup_default_days)
     return _joint_state(session["id"], actor.party)
+
+
+@router.post("/sessions/{session_id}/ideas/{idea_id}/think", response_model=JointStateOut)
+def think_it_through(idea_id: str, ctx: tuple[dict, Actor] = Depends(get_actor)):
+    """Private reality-check questions about one idea, for this person only.
+
+    Both people get the same three question types. The questions are built
+    from shared content only and are never shown to the other person.
+    """
+    session, actor = ctx
+    if session["status"] not in ("joint_review", "resolved"):
+        raise HTTPException(status_code=409, detail="The joint session isn't open.")
+    ideas = list_ideas(session["id"])
+    idea = next((item for item in ideas if item["id"] == idea_id), None)
+    if idea is None:
+        raise HTTPException(status_code=404, detail="Idea not found")
+    if idea_id not in _my_questions(session["id"], actor.party):
+        limit_writes(session["id"], actor.party)
+        state = load_state(session)
+        with track_calls(session["id"]):
+            questions = reality_check(
+                party=party_code(actor.party),
+                idea=idea["text"],
+                state=state,
+                language=session.get(language_field(actor.party)),
+            )
+        get_supabase().table("reality_checks").upsert(
+            {"idea_id": idea_id, "session_id": session["id"], "party_role": actor.party, "questions": questions},
+            on_conflict="idea_id,party_role",
+        ).execute()
+        _update_state(
+            session,
+            lambda state: append_audit(state, {"stage": "REALITY_TEST", "agent": "REALITY_TESTER", "type": f"think_{actor.party}"}),
+        )
+    return _joint_state(session["id"], actor.party)
+
+
+@router.get("/sessions/{session_id}/translation", response_model=TranslationOut)
+def translation_of_their_words(language: Language | None = None, ctx: tuple[dict, Actor] = Depends(get_actor)):
+    """The other person's approved words, translated for this person.
+
+    Always returned with the original; the screen labels it as a translation.
+    """
+    session, actor = ctx
+    if session["status"] not in ("joint_review", "resolved"):
+        raise HTTPException(status_code=409, detail="The joint session isn't open.")
+    target = language or session.get(language_field(actor.party)) or "en"
+    rows = get_supabase().table("joint_summaries").select("*").eq("session_id", session["id"]).limit(1).execute().data
+    if not rows:
+        raise HTTPException(status_code=404, detail="Summary not ready yet")
+    other = _other(actor.party)
+    original = rows[0]["user_b_perspective" if other == "user_b" else "user_a_perspective"]
+    cached = (
+        get_supabase()
+        .table("share_translations")
+        .select("*")
+        .eq("session_id", session["id"])
+        .eq("source_party", other)
+        .eq("language", target)
+        .limit(1)
+        .execute()
+        .data
+    )
+    if cached and cached[0].get("source_text") == original:
+        return TranslationOut(language=target, original=original, translation=cached[0]["text"])
+    limit_writes(session["id"], actor.party)
+    with track_calls(session["id"]):
+        translated = translate_share(text=original, language=target, state=load_state(session))
+    if translated:
+        get_supabase().table("share_translations").upsert(
+            {
+                "session_id": session["id"],
+                "source_party": other,
+                "language": target,
+                "source_text": original,
+                "text": translated,
+                "created_at": now_iso(),
+            },
+            on_conflict="session_id,source_party,language",
+        ).execute()
+    return TranslationOut(language=target, original=original, translation=translated)

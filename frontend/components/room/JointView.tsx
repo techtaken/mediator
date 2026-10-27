@@ -2,18 +2,95 @@
 
 import { useState } from "react";
 import { AgreementCard } from "@/components/room/AgreementCard";
+import { FollowUpCard } from "@/components/room/FollowUpCard";
 import { IdeaCard } from "@/components/room/IdeaCard";
 import { SuggestIdea } from "@/components/room/SuggestIdea";
-import { draftAgreement, respondToIdea, signAgreement, suggestIdea, type AuthOpts } from "@/lib/api";
-import type { IdeaResponse, JointState, JointSummary, Session } from "@/lib/types";
+import {
+  answerFollowUp,
+  draftAgreement,
+  fetchTranslation,
+  reopenJoint,
+  respondToIdea,
+  signAgreement,
+  suggestIdea,
+  thinkItThrough,
+  type AuthOpts,
+} from "@/lib/api";
+import type { FollowUp, IdeaResponse, JointState, JointSummary, Language, Session, Translation } from "@/lib/types";
 
 type Props = {
   session: Session;
   summary: JointSummary | null;
   joint: JointState | null;
+  followUp: FollowUp | null;
   auth: AuthOpts;
   onJoint: (next: JointState) => void;
+  onFollowUp: (next: FollowUp) => void;
 };
+
+const LANGUAGE_LABEL: Record<Language, string> = { en: "English", hinglish: "Hinglish", hi: "हिन्दी" };
+
+/** Their approved words, with an optional, clearly labelled translation. The original always shows. */
+function TheirWords({ session, text, auth }: { session: Session; text: string; auth: AuthOpts }) {
+  const [translation, setTranslation] = useState<Translation | null>(null);
+  const [loading, setLoading] = useState<Language | null>(null);
+  const [failed, setFailed] = useState(false);
+  const preferred = session.my_language ?? "en";
+  const choices: Language[] = [preferred, ...(["en", "hinglish", "hi"] as Language[]).filter((code) => code !== preferred)];
+
+  async function translate(language: Language) {
+    setLoading(language);
+    setFailed(false);
+    try {
+      const result = await fetchTranslation(session.id, language, auth);
+      setTranslation(result);
+      setFailed(!result.translation);
+    } catch {
+      setFailed(true);
+    } finally {
+      setLoading(null);
+    }
+  }
+
+  return (
+    <figure className="rounded-3xl border border-ink/10 bg-paper p-5">
+      <figcaption className="text-xs font-medium tracking-[0.16em] text-terracotta uppercase">The other person</figcaption>
+      <blockquote className="mt-3 text-[15px] leading-relaxed whitespace-pre-wrap text-ink">{text}</blockquote>
+      {translation?.translation ? (
+        <div className="mt-4 border-t border-dashed border-ink/15 pt-3">
+          <p className="text-[11px] font-medium tracking-[0.14em] text-muted uppercase">
+            Translation · {LANGUAGE_LABEL[translation.language]} · by Mediator, not their words
+          </p>
+          <p className="mt-1.5 text-[15px] leading-relaxed whitespace-pre-wrap text-ink/85">{translation.translation}</p>
+        </div>
+      ) : null}
+      {failed ? (
+        <p className="mt-3 text-[13px] text-muted">We couldn&apos;t translate this safely. Their own words are above.</p>
+      ) : null}
+      <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px]">
+        <span className="text-muted">{translation?.translation ? "Show in:" : "Read a translation:"}</span>
+        {choices.map((code) => (
+          <button
+            key={code}
+            type="button"
+            disabled={loading !== null}
+            onClick={() => void translate(code)}
+            className={`underline-offset-4 hover:underline disabled:opacity-50 ${
+              translation?.language === code && translation.translation ? "text-ink" : "text-teal"
+            }`}
+          >
+            {loading === code ? "Translating…" : LANGUAGE_LABEL[code]}
+          </button>
+        ))}
+        {translation?.translation ? (
+          <button type="button" onClick={() => setTranslation(null)} className="text-muted underline-offset-4 hover:underline">
+            Hide
+          </button>
+        ) : null}
+      </div>
+    </figure>
+  );
+}
 
 function Voice({ label, text, tone }: { label: string; text: string; tone: "mine" | "theirs" }) {
   return (
@@ -28,7 +105,7 @@ function Voice({ label, text, tone }: { label: string; text: string; tone: "mine
   );
 }
 
-export function JointView({ session, summary, joint, auth, onJoint }: Props) {
+export function JointView({ session, summary, joint, followUp, auth, onJoint, onFollowUp }: Props) {
   const [error, setError] = useState("");
   const [drafting, setDrafting] = useState(false);
 
@@ -75,6 +152,30 @@ export function JointView({ session, summary, joint, auth, onJoint }: Props) {
         Each of you approved exactly what&apos;s shown here. Nothing else from your private chats was shared.
       </p>
 
+      {followUp && session.status === "resolved" ? (
+        <div className="mt-6">
+          <FollowUpCard
+            followUp={followUp}
+            onAnswer={async (answers) => {
+              setError("");
+              try {
+                onFollowUp(await answerFollowUp(session.id, answers, auth));
+              } catch (err) {
+                setError(err instanceof Error ? err.message : "Couldn't send your check-in");
+              }
+            }}
+            onReopen={() => quiet(() => reopenJoint(session.id, auth))}
+          />
+        </div>
+      ) : null}
+
+      {joint?.reopened && open ? (
+        <p className="mt-5 rounded-2xl bg-teal/10 px-3 py-2.5 text-sm leading-relaxed text-teal">
+          You&apos;re talking this through again after a check-in. Your earlier agreement is kept on record. Change any
+          answers you like, then sign a new version together.
+        </p>
+      ) : null}
+
       {signed && joint?.agreement ? (
         <div className="mt-6">
           <AgreementCard agreement={joint.agreement} agreedCount={joint.agreed_count} onSign={async () => {}} onRedraft={async () => {}} />
@@ -82,7 +183,7 @@ export function JointView({ session, summary, joint, auth, onJoint }: Props) {
       ) : null}
 
       <div className="mt-6 space-y-3">
-        <Voice label="The other person" text={theirs} tone="theirs" />
+        <TheirWords session={session} text={theirs} auth={auth} />
         <Voice label="You" text={mine} tone="mine" />
       </div>
 
@@ -128,6 +229,7 @@ export function JointView({ session, summary, joint, auth, onJoint }: Props) {
                         onAnswer={(response: IdeaResponse, note: string | null) =>
                           quiet(() => respondToIdea(session.id, idea.id, response, note, auth))
                         }
+                        onThink={() => quiet(() => thinkItThrough(session.id, idea.id, auth))}
                       />
                     ))}
                   </ol>
@@ -149,7 +251,7 @@ export function JointView({ session, summary, joint, auth, onJoint }: Props) {
               <AgreementCard
                 agreement={joint.agreement}
                 agreedCount={joint.agreed_count}
-                onSign={() => quiet(() => signAgreement(session.id, joint.agreement!.version, auth))}
+                onSign={(days) => quiet(() => signAgreement(session.id, joint.agreement!.version, days, auth))}
                 onRedraft={() => quiet(() => draftAgreement(session.id, auth))}
               />
             ) : joint && joint.agreed_count > 0 ? (

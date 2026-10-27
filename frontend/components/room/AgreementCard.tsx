@@ -7,15 +7,24 @@ function when(value: string | null) {
   return value ? new Date(value).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : "";
 }
 
+const CHECKINS: { days: number; label: string }[] = [
+  { days: 7, label: "1 week" },
+  { days: 14, label: "2 weeks" },
+  { days: 30, label: "1 month" },
+  { days: 0, label: "No check-in" },
+];
+
 type Props = {
   agreement: Agreement;
   agreedCount: number;
-  onSign: () => Promise<void>;
+  /** checkinDays: when to privately ask this person how it's going (0 = never). */
+  onSign: (checkinDays: number) => Promise<void>;
   onRedraft: () => Promise<void>;
 };
 
 export function AgreementCard({ agreement, agreedCount, onSign, onRedraft }: Props) {
   const [confirmed, setConfirmed] = useState(false);
+  const [checkin, setCheckin] = useState(14);
   const [busy, setBusy] = useState<"sign" | "redraft" | null>(null);
   const outOfDate = !agreement.fully_signed && agreedCount !== agreement.terms.length;
 
@@ -100,10 +109,31 @@ export function AgreementCard({ agreement, agreedCount, onSign, onRedraft }: Pro
                   />
                   I&apos;ve read this and I agree to it.
                 </label>
+                <fieldset className="rounded-2xl border border-ink/10 px-3 py-2.5">
+                  <legend className="px-1 text-[13px] text-muted">Check in with me privately in</legend>
+                  <div className="mt-1 grid grid-cols-4 gap-1.5">
+                    {CHECKINS.map((option) => (
+                      <button
+                        key={option.days}
+                        type="button"
+                        aria-pressed={checkin === option.days}
+                        onClick={() => setCheckin(option.days)}
+                        className={`rounded-full px-1.5 py-1.5 text-[12px] leading-tight transition ${
+                          checkin === option.days ? "bg-ink text-card" : "border border-ink/15 bg-paper text-ink"
+                        }`}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="mt-1.5 px-1 text-[12px] text-muted">
+                    We&apos;ll ask how it&apos;s going. Your answers stay private.
+                  </p>
+                </fieldset>
                 <button
                   type="button"
                   disabled={!confirmed || busy !== null}
-                  onClick={() => void run("sign", onSign)}
+                  onClick={() => void run("sign", () => onSign(checkin))}
                   className="w-full rounded-full bg-teal px-5 py-3.5 text-base font-medium text-card disabled:opacity-50"
                 >
                   {busy === "sign" ? "Signing…" : "Sign this agreement"}

@@ -5,7 +5,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from app.agents.llm import AgentCaller, call_agent, dumps
-from app.agents.prompts import data_block
+from app.agents.prompts import LANGUAGE_NAMES, STYLES, data_block, language_instruction, style_guide
+from app.agents.schemas import REALITY_TYPES
 from app.agents.state import (
     PartyKey,
     append_audit,
@@ -123,6 +124,7 @@ def handle_party_turn(
     private: dict[str, Any] | str | None,
     relationship_context: str = "",
     topic: str | None = None,
+    language: str | None = None,
     caller: AgentCaller = call_agent,
 ) -> TurnResult:
     """One private-intake turn. The reply always goes back to `party`."""
@@ -172,6 +174,7 @@ def handle_party_turn(
         "INSTRUCTION": instruction,
         "RELATIONSHIP_CONTEXT": relationship_context or "",
         "DISPUTE_TOPIC": topic_for(party, topic),
+        "LANGUAGE": language_instruction(language),
     }
 
     try:
@@ -335,6 +338,7 @@ def _run_internal(
         "PARTY_ID": party,
         "AGREED_TERMS": dumps(view.get("agreed_terms") or []),
         "FOCUS": str(plan.get("focus") or ""),
+        "STYLE_GUIDE": style_guide(state.get("style")),
     }
     try:
         result = caller(agent, mapping)
@@ -350,6 +354,9 @@ def _run_internal(
             state["agenda"] = result["agenda"]
         if result.get("escalation_stage") is not None:
             state["escalation_stage"] = result["escalation_stage"]
+        # A fixed label (validated in schemas.py) that tunes the joint voice and options.
+        style = str(result.get("style") or "").strip().lower()
+        state["style"] = style if style in STYLES else "facilitative"
         state["diagnosis"] = result
     elif agent == "OPTIONS":
         state["options"] = result
@@ -369,6 +376,7 @@ def _common_ground(state: dict[str, Any], caller: AgentCaller) -> str | None:
         "FOCUS": "",
         "INSTRUCTION": "Name what both approved texts have in common.",
         "APPROVED_SHARES": dumps(view.get("approved_shares") or {}),
+        "STYLE_GUIDE": style_guide(state.get("style")),
     }
     try:
         result = caller("JOINT_VOICE", mapping)
@@ -499,6 +507,7 @@ def draft_share(
     private: dict[str, Any] | str | None,
     topic: str | None,
     state: dict[str, Any],
+    language: str | None = None,
     caller: AgentCaller = call_agent,
 ) -> dict[str, Any] | None:
     """Draft the text the other party would see about this party's side.
@@ -512,6 +521,7 @@ def draft_share(
         "DISPUTE_TOPIC": topic_for(party, topic),
         "TRANSCRIPT": transcript or "(no messages)",
         "PRIVATE_MEMORY": dumps(normalize_private(private)),
+        "LANGUAGE": language_instruction(language),
     }
     try:
         result = caller("SHARE_DRAFTER", mapping)
@@ -644,3 +654,155 @@ def run_joint_pipeline(
         "common_ground": common_ground,
         "compromises": compromises,
     }
+
+
+# --- Phase 3 helpers ----------------------------------------------------------
+
+# Pre-written questions, used when the model's questions are missing or fail
+# their check, so both parties always get the same three question types.
+REALITY_FALLBACK = {
+    "en": {
+        "alternative": "If you two don't agree on this, what happens next for you?",
+        "practical": "What would make this work day to day, and what might get in the way?",
+        "their_view": "How do you think the other person sees this idea?",
+    },
+    "hinglish": {
+        "alternative": "Agar is baat pe aap dono agree nahi karte, toh aapke liye aage kya hoga?",
+        "practical": "Roz ki zindagi mein yeh kaise chalega, aur kya cheez beech mein aa sakti hai?",
+        "their_view": "Aapko kya lagta hai, doosre insaan ko yeh idea kaisa lagta hoga?",
+    },
+    "hi": {
+        "alternative": "अगर इस बात पर आप दोनों सहमत नहीं होते, तो आपके लिए आगे क्या होगा?",
+        "practical": "रोज़मर्रा में यह कैसे चलेगा, और क्या चीज़ रुकावट बन सकती है?",
+        "their_view": "आपको क्या लगता है, दूसरे व्यक्ति को यह विचार कैसा लगता होगा?",
+    },
+}
+
+
+def reality_check(
+    *,
+    party: PartyKey,
+    idea: str,
+    state: dict[str, Any],
+    language: str | None = None,
+    caller: AgentCaller = call_agent,
+) -> list[dict[str, str]]:
+    """Private "think it through" questions about one idea, for one party.
+
+    Always exactly one question of each type in REALITY_TYPES, so both parties
+    get the same kinds of question. Model questions are used only if they pass
+    a safety check that actually ran; otherwise the pre-written ones are.
+    """
+    fallback = REALITY_FALLBACK.get(language or "", REALITY_FALLBACK["en"])
+    view = shared_view(state)
+    try:
+        result = caller(
+            "REALITY_TESTER",
+            {
+                "SHARED_STATE_JSON": dumps(view),
+                "OPTIONS": dumps({"idea": idea}),
+                "PARTY_ID": party,
+                "LANGUAGE": language_instruction(language),
+            },
+        )
+    except Exception:
+        logger.exception("reality tester failed")
+        result = {"questions": []}
+    by_type: dict[str, str] = {}
+    for index, item in enumerate(result.get("questions") or []):
+        if isinstance(item, str):
+            item = {"type": REALITY_TYPES[index] if index < len(REALITY_TYPES) else "", "question": item}
+        if not isinstance(item, dict):
+            continue
+        kind, question = str(item.get("type") or ""), str(item.get("question") or "").strip()
+        if kind in REALITY_TYPES and question and kind not in by_type:
+            by_type[kind] = question[:300]
+    questions = [{"type": kind, "question": by_type.get(kind) or fallback[kind]} for kind in REALITY_TYPES]
+    generated = [item["question"] for item in questions if item["question"] != fallback[item["type"]]]
+    if generated and _check_outbound("\n".join(generated), state, party, caller, party_view(state, party))[0] is not False:
+        append_audit(state, {"stage": "REALITY_TEST", "agent": "REALITY_TESTER", "type": "fallback_questions"})
+        questions = [{"type": kind, "question": fallback[kind]} for kind in REALITY_TYPES]
+    return questions
+
+
+def translate_share(
+    *,
+    text: str,
+    language: str,
+    state: dict[str, Any],
+    caller: AgentCaller = call_agent,
+) -> str | None:
+    """Translate one party's approved text for the other party.
+
+    The original is always shown too. Returns None unless the translation
+    exists, is a plausible length, and passes a safety check that ran.
+    """
+    target = LANGUAGE_NAMES.get(language)
+    if not target or not text.strip():
+        return None
+    try:
+        result = caller("TRANSLATOR", {"SOURCE_TEXT": text, "TARGET_LANGUAGE": target})
+    except Exception:
+        logger.exception("translator failed")
+        return None
+    translation = str(result.get("translation") or "").strip()
+    if not translation:
+        return None
+    ratio = len(translation) / max(len(text), 1)
+    if not 0.4 <= ratio <= 2.5:
+        return None
+    if _check_outbound(translation, state, "both", caller)[0] is not False:
+        return None
+    return translation[:2400]
+
+
+FOLLOW_UP_FALLBACK = "Thank you for checking in. Your answers are private to you."
+
+
+def follow_up_reply(
+    *,
+    party: PartyKey,
+    terms: list[str],
+    answers: dict[str, Any],
+    state: dict[str, Any],
+    language: str | None = None,
+    caller: AgentCaller = call_agent,
+) -> dict[str, Any]:
+    """The follow-up agent's private reply to one party's check-in.
+
+    Gets only the shared state, the signed terms and this party's own answers.
+    """
+    mapping = {
+        "SHARED_STATE_JSON": dumps(party_view(state, party)),
+        "AGREEMENT_JSON": dumps([{"id": index + 1, "text": text} for index, text in enumerate(terms)]),
+        "PARTY_ID": party,
+        "CHECKIN_ANSWERS": dumps(answers),
+        "LANGUAGE": language_instruction(language),
+    }
+    try:
+        result = caller("FOLLOW_UP", mapping)
+    except Exception:
+        logger.exception("follow-up agent failed")
+        return {"reply": FOLLOW_UP_FALLBACK, "recommendation": "NEXT_CHECKIN"}
+
+    def regenerate(feedback: str) -> str:
+        retry = caller("FOLLOW_UP", {**mapping, "CHECKIN_ANSWERS": dumps({**answers, "rewrite_note": feedback})})
+        return str(retry.get("reply_to_party") or "")
+
+    reply = _guard_outgoing(
+        str(result.get("reply_to_party") or "").strip(),
+        state,
+        {"mode": "private"},
+        party,
+        caller,
+        regenerate,
+        view=party_view(state, party),
+    )
+    if reply == NEUTRAL_FALLBACK:
+        reply = FOLLOW_UP_FALLBACK
+    return {"reply": reply, "recommendation": result.get("recommendation") or "NEXT_CHECKIN"}
+
+
+def referral_brief(*, state: dict[str, Any], reason: str, caller: AgentCaller = call_agent) -> dict[str, Any]:
+    """A neutral handoff brief for a human mediator, from shared content only."""
+    return caller("HANDOFF", {"SHARED_STATE_JSON": dumps(shared_view(state)), "REASON": reason})

@@ -52,3 +52,84 @@ Branch: `phase2-3-quality-and-growth` (cut from `phase0-agent-hardening`).
 
 - A Gemini key to run `python -m evals.run` and `pytest -m live`.
 - A scheduler (Render cron, GitHub Actions schedule, Supabase `pg_cron` + `pg_net`, …) to call `POST /api/jobs/retention` daily with `X-Job-Token`.
+
+## Phase 3: additions
+
+All seven items were built, in priority order.
+
+### 1. CI and deploy configs (nothing deployed)
+
+- `.github/workflows/ci.yml`: backend `pytest -m "not live"` (placeholder settings, no secrets) and frontend `npm ci` → `next typegen` → `tsc --noEmit` → `eslint` → `next build`. A manual `workflow_dispatch` option runs the live evals with a `GEMINI_API_KEY` secret and uploads the report.
+- `backend/Dockerfile` (python:3.12-slim, non-root, `$PORT`) and `backend/.dockerignore`. **Not built here** (no Docker daemon in this environment); it only runs `pip install -r requirements.txt` and `uvicorn app.main:app`, both of which ran fine locally.
+- `render.yaml`: API web service (Docker, one instance, `/health`) plus two crons (retention daily, follow-ups hourly) sharing a generated `JOB_TOKEN`.
+- `docs/DEPLOY.md`: Supabase, Render, Vercel (root `frontend`, the three `NEXT_PUBLIC_*` vars), schedulers, and every env var.
+- `tsc` needs Next's generated route types (`LayoutProps`). This was already true before this branch; CI runs `npx next typegen` first.
+
+### 2. Follow-up agent (check-ins)
+
+- When signing, each person picks a check-in (1 week, 2 weeks (default), 1 month, none). When the room resolves, the request that resolved it schedules one `followups` row per person who wants one.
+- `POST /api/jobs/followups` (hourly) opens due check-ins. In the room, each person answers privately: each term working / partly / not working, how things feel (1–5), anything new (optional, private), and whether they'd like to talk again. The `FOLLOW_UP` agent (prompt rewritten, now with a schema) gets the shared view, the signed terms and only that person's answers, and its reply goes through the outbound safety and neutrality checks. Crisis or severity-2 wording in "anything new" gets the helplines instead, and a safety flag.
+- "Accounts differ" is computed in code, not by the model. Once both have answered a round, each sees only the term numbers where the two accounts differ, with copy that says Mediator doesn't decide who's right. Neither ever sees the other's answers.
+- Either person can then **Talk it through together again**: the signed agreement is archived in `mediation_state.past_agreements`, the room goes back to `joint_review` with all ideas and answers kept, and signing a new version schedules round 2.
+
+### 3. Human referral inbox
+
+- `/admin/referrals` lists rooms with `halt_kind = "referral"` (handled ones are hidden unless you ask for them).
+- **Write handoff brief** runs the existing `HANDOFF` agent on `shared_view` only (approved shares, process signals, joint results; never private rooms or memory) and stores it on the session. **Mark handled** records who and when. Both are written to the audit trail.
+
+### 4. Live updates
+
+- `GET /api/sessions/{id}/events` is a server-sent events stream. It sends a `change` event when a per-person fingerprint changes, `gone` when the room is deleted, keepalives, and `reconnect` after `SSE_MAX_SECONDS`.
+- The fingerprint only covers things that person can already see. It never includes the other person's message count, state version or private activity, so event timing reveals nothing about the other side.
+- Frontend `lib/live.ts` reads the stream with `fetch` (so it can send `Authorization` / `X-Invite-Token`) and reconnects with backoff. While the stream is connected, polling drops to a 30 s safety net; otherwise it stays at 2.5 s.
+- The server checks the database every 1.5 s per open stream. That is fine for an MVP; Supabase Realtime isn't used because the browser has no table grants by design.
+
+### 5. Language preference
+
+- English, Hinglish, or Hindi in Devanagari, per person, picked on the consent card or in **Options**. The choice goes to the caucus, share drafter, follow-up agent and reality tester. If the person hasn't written yet, their welcome message is replaced with a Hinglish or Hindi version (still disclosing the AI).
+- In the joint view, the other person's approved words have **Read a translation** links (English, Hinglish, Hindi). A new `TRANSLATOR` agent sees only that approved text. The translation must be a plausible length and pass an outbound safety check that actually ran, or none is shown. It is cached, and labelled "Translation · by Mediator, not their words" under the original, which always stays on screen. Approved text itself is never rewritten.
+- **Not done:** Tamil, Kannada and other regional languages, and translation of the "where you overlap" note and ideas.
+
+### 6. Reality-check questions
+
+- A private **Think it through** link on each idea. The `REALITY_TESTER` (prompt rewritten) works from shared content and the idea only, and must produce exactly three typed questions: `alternative` (what happens without agreement), `practical` (does it work day to day), `their_view` (how the other might see it).
+- Code enforces that both people always get the same three types, in order. Missing or unknown types are filled from pre-written questions in the person's language. If the safety check blocks the questions, or can't run, all three pre-written ones are used. Answers are cached per idea per person in `reality_checks` and never shown to the other person.
+
+### 7. Mediation style
+
+- The Diagnostician now returns `style` (facilitative / transformative / narrative), validated to those three (anything else becomes facilitative) and stored in shared state. A style guide is passed to the Joint Voice ("where you overlap") and Options prompts. The admin detail page shows it.
+
+### Migrations to run (Phase 3)
+
+`supabase/migrations/009_phase3_growth.sql`, after 008.
+
+### New env vars (Phase 3)
+
+`FOLLOWUP_DEFAULT_DAYS` (14), `SSE_MAX_SECONDS` (300). Frontend: no new ones.
+
+## All migrations, in order
+
+001_init → 002_mediation_agents → 003_phase0_hardening → 004_session_topic → 005_share_approval → 006_joint_session → 007_consent → **008_phase2_quality** → **009_phase3_growth**.
+
+## Needs your accounts
+
+- **Gemini key** to run `python -m evals.run` and `pytest -m live` (and optionally as a `GEMINI_API_KEY` GitHub secret for the manual eval job).
+- **Supabase**: run migrations 008 and 009.
+- **Render** (or Fly / Cloud Run): create from `render.yaml`, fill in the secrets, set `API_URL` on both crons.
+- **Vercel**: root `frontend`, three `NEXT_PUBLIC_*` vars; then set the API's `CORS_ORIGINS` / `FRONTEND_BASE_URL`.
+- **Cron**: Render's crons from `render.yaml`, or any scheduler calling `/api/jobs/retention` daily and `/api/jobs/followups` hourly with `X-Job-Token`.
+
+## Verification
+
+- Backend: `python -m pytest -m "not live"` gives 225 passed (was 117). New suites: `test_phase2.py`, `test_phase3.py`, `test_evals.py`. Live tests (6) skip without a key.
+- Frontend: `next typegen`, `tsc --noEmit`, `eslint app components lib` and `next build` all pass.
+- Manual UI check: the real API ran against the in-memory fake database with scripted agents. Screenshots at 390 px width covered the consent card with the language picker, the Options menu with deletion and its typed confirmation, the joint view with a Hindi translation and private questions, a check-in, and "accounts differ". The SSE stream and its CORS preflight were checked with curl.
+
+## Known gaps and follow-ups
+
+- The live evals have not been run (no key here), so the prompts are untested against real Gemini. Run `python -m evals.run` first and read the report.
+- Leak checks are string overlap only (no embeddings).
+- Rate limits and live-update streams are per process: run one API instance until they move to a shared store.
+- Person A could still have copied the invite link before B joined. A one-time claim with a separate device token for B would close this.
+- In-row `mediation_state.audit_log` reasons are no longer stored, but rows saved before this branch still hold them until those rooms are purged or next saved.
+- The Docker image was not built here.

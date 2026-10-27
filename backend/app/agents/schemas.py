@@ -159,6 +159,19 @@ class DiagnosticianOut(_Out):
     agenda: list[str] = Field(default_factory=list)
     mediation_suitable: bool = True
     suitability_reason: str = ""
+    style: Literal["facilitative", "transformative", "narrative"] = "facilitative"
+    style_reason: str = ""
+
+    @field_validator("style", mode="before")
+    @classmethod
+    def _style(cls, value: Any) -> str:
+        text = str(value or "").strip().lower()
+        return text if text in {"facilitative", "transformative", "narrative"} else "facilitative"
+
+    @field_validator("style_reason", "suitability_reason", mode="before")
+    @classmethod
+    def _text(cls, value: Any) -> str:
+        return "" if value is None else str(value)
 
     @field_validator("escalation_stage", mode="before")
     @classmethod
@@ -216,6 +229,63 @@ class ShareDraftOut(_Out):
         return [str(item) for item in _as_list(value) if item]
 
 
+REALITY_TYPES = ("alternative", "practical", "their_view")
+
+
+class RealityQuestion(_Out):
+    type: str = ""
+    question: str = ""
+
+    @field_validator("type", "question", mode="before")
+    @classmethod
+    def _text(cls, value: Any) -> str:
+        return "" if value is None else str(value).strip()
+
+
+class RealityOut(_Out):
+    questions: list[RealityQuestion] = Field(default_factory=list)
+
+    @field_validator("questions", mode="before")
+    @classmethod
+    def _questions(cls, value: Any) -> list[Any]:
+        # Accept bare strings in type order as well as {type, question} objects.
+        out = []
+        for index, item in enumerate(_as_list(value)):
+            if isinstance(item, str):
+                kind = REALITY_TYPES[index] if index < len(REALITY_TYPES) else ""
+                out.append({"type": kind, "question": item})
+            elif isinstance(item, dict):
+                out.append(item)
+        return out
+
+
+class FollowUpOut(_Out):
+    reply_to_party: str
+    satisfaction: int | None = None
+    new_issues: list[Any] = Field(default_factory=list)
+    recommendation: Literal["NEXT_CHECKIN", "REOPEN", "REFER_TO_HUMAN"] = "NEXT_CHECKIN"
+
+    @field_validator("satisfaction", mode="before")
+    @classmethod
+    def _satisfaction(cls, value: Any) -> int | None:
+        return None if value is None else _clamp(value, 1, 5, 3)
+
+    @field_validator("recommendation", mode="before")
+    @classmethod
+    def _recommendation(cls, value: Any) -> str:
+        text = str(value or "").strip().upper()
+        return text if text in {"NEXT_CHECKIN", "REOPEN", "REFER_TO_HUMAN"} else "NEXT_CHECKIN"
+
+    @field_validator("new_issues", mode="before")
+    @classmethod
+    def _issues(cls, value: Any) -> list[Any]:
+        return _as_list(value)
+
+
+class TranslatorOut(_Out):
+    translation: str
+
+
 ROLE_SCHEMAS: dict[str, type[BaseModel]] = {
     "SAFETY_GUARDIAN": SafetyOut,
     "ORCHESTRATOR": OrchestratorOut,
@@ -227,6 +297,9 @@ ROLE_SCHEMAS: dict[str, type[BaseModel]] = {
     "HANDOFF": HandoffOut,
     "SHARE_DRAFTER": ShareDraftOut,
     "DRAFTER": DrafterOut,
+    "REALITY_TESTER": RealityOut,
+    "FOLLOW_UP": FollowUpOut,
+    "TRANSLATOR": TranslatorOut,
 }
 
 

@@ -1,6 +1,18 @@
-import type { ChatMessage, IdeaResponse, JointState, JointSummary, RoomSummary, Session, ShareDraft } from "./types";
+import type {
+  ChatMessage,
+  CheckInAnswers,
+  FollowUp,
+  IdeaResponse,
+  JointState,
+  JointSummary,
+  Language,
+  RoomSummary,
+  Session,
+  ShareDraft,
+  Translation,
+} from "./types";
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+export const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 const TOKEN_KEY = (sessionId: string) => `mediator_invite_${sessionId}`;
 
@@ -159,12 +171,48 @@ export function draftAgreement(id: string, auth: AuthOpts) {
   return request<JointState>(`/api/sessions/${id}/agreement/draft`, { method: "POST", ...auth });
 }
 
-export function signAgreement(id: string, version: number, auth: AuthOpts) {
+/** checkinDays: days until this person's private check-in (0 = none, null = default). */
+export function signAgreement(id: string, version: number, checkinDays: number | null, auth: AuthOpts) {
   return request<JointState>(`/api/sessions/${id}/agreement/sign`, {
     method: "POST",
-    body: JSON.stringify({ version }),
+    body: JSON.stringify(checkinDays === null ? { version } : { version, checkin_days: checkinDays }),
     ...auth,
   });
+}
+
+export function setLanguage(id: string, language: Language, auth: AuthOpts) {
+  return request<Session>(`/api/sessions/${id}/language`, {
+    method: "POST",
+    body: JSON.stringify({ language }),
+    ...auth,
+  });
+}
+
+/** The other person's approved words, with a translation for this person when one could be made. */
+export function fetchTranslation(id: string, language: Language, auth: AuthOpts) {
+  return request<Translation>(`/api/sessions/${id}/translation?language=${language}`, { ...auth });
+}
+
+/** Private "think it through" questions about one idea. */
+export function thinkItThrough(id: string, ideaId: string, auth: AuthOpts) {
+  return request<JointState>(`/api/sessions/${id}/ideas/${ideaId}/think`, { method: "POST", ...auth });
+}
+
+export function fetchFollowUp(id: string, auth: AuthOpts) {
+  return request<FollowUp>(`/api/sessions/${id}/followup`, { ...auth });
+}
+
+export function answerFollowUp(id: string, answers: CheckInAnswers, auth: AuthOpts) {
+  return request<FollowUp>(`/api/sessions/${id}/followup`, {
+    method: "POST",
+    body: JSON.stringify(answers),
+    ...auth,
+  });
+}
+
+/** Open the joint session again after a check-in. */
+export function reopenJoint(id: string, auth: AuthOpts) {
+  return request<JointState>(`/api/sessions/${id}/reopen`, { method: "POST", ...auth });
 }
 
 /** Person A replaces the invite link before the other person joins. */

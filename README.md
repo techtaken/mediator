@@ -8,7 +8,7 @@ Indian-context shuttle-diplomacy MVP: two private intake rooms, Gemini-mediated 
 - `backend/` — FastAPI + Google GenAI SDK
 - `supabase/migrations/` — Postgres schema (run in your Supabase project)
 
-Person A signs in with email OTP. Person B joins from the invite link with no account. Chat updates by polling.
+Person A signs in with email OTP. Person B joins from the invite link with no account. Rooms update live over server-sent events, with polling as the fallback.
 
 ## How a turn works
 
@@ -35,6 +35,7 @@ When a room halts, only the party who triggered it sees why, with helplines. The
    - `006_joint_session.sql`: ideas, each person's answers, and the agreement both sign
    - `007_consent.sql`: each person's "how Mediator works" acceptance, and an index for "Your rooms"
    - `008_phase2_quality.sql`: per-call agent stats, expiring invite links, "delete my data" markers, audit-reason retention
+   - `009_phase3_growth.sql`: check-ins after an agreement, the referral inbox, language preference, translations, private "think it through" questions
 4. Copy keys from **Project Settings → API**:
    - Project URL
    - Publishable key (`sb_publishable_…`) for the browser
@@ -62,6 +63,10 @@ Other backend settings (all optional, defaults in `backend/app/config.py` and `b
 | `RETENTION_DAYS` | 180 | The retention job removes rooms older than this (0 = never) |
 | `AUDIT_REASON_RETENTION_DAYS` | 30 | Free-text agent reasoning in the audit table is cleared after this |
 | `JOB_TOKEN` | empty | Secret a scheduler sends as `X-Job-Token` to `/api/jobs/*` (empty = admins only) |
+| `FOLLOWUP_DEFAULT_DAYS` | 14 | Check-in delay when a signer doesn't pick one |
+| `SSE_MAX_SECONDS` | 300 | Live-update streams close after this and the browser reconnects |
+
+Deploying (Render + Vercel), CI and the full env var list: see `docs/DEPLOY.md`.
 
 ## 3. Run locally
 
@@ -91,14 +96,20 @@ Open [http://localhost:3000](http://localhost:3000).
 
 To give someone access, add their sign-in email to `ADMIN_EMAILS` in `backend/.env` (comma-separated) and restart the backend. With it empty, nobody is an admin. Every time an admin opens a session, an `ADMIN` entry with their email is written to that session's audit trail; if that write fails, the page is refused.
 
+`/admin/referrals` is the referral inbox: rooms paused with **Talk to a person**. An admin can generate a neutral handoff brief (written by the Handoff agent from shared, approved content only, never either private room) and mark the referral handled. Both actions are written to the room's audit trail.
+
 Each session's detail page also shows its agent calls: count, failures, tokens in/out, average latency and an estimated cost (from the price settings above). Every agent call is also logged as one `agent_call {...}` JSON line.
 
 ### Jobs (cron)
 
-`POST /api/jobs/retention` removes rooms older than `RETENTION_DAYS` and clears audit reasoning older than `AUDIT_REASON_RETENTION_DAYS`. It is idempotent; run it daily from any scheduler:
+- `POST /api/jobs/retention` (daily): removes rooms older than `RETENTION_DAYS` and clears audit reasoning older than `AUDIT_REASON_RETENTION_DAYS`.
+- `POST /api/jobs/followups` (hourly): opens check-ins that have come due.
+
+Both are idempotent. `render.yaml` schedules them on Render; any scheduler works:
 
 ```bash
 curl -X POST -H "X-Job-Token: $JOB_TOKEN" https://your-backend/api/jobs/retention
+curl -X POST -H "X-Job-Token: $JOB_TOKEN" https://your-backend/api/jobs/followups
 ```
 
 A signed-in admin can call it too (with their `Authorization` header).
@@ -112,6 +123,16 @@ cd backend
 ```
 
 The offline tests set harmless placeholder Supabase/Gemini values if none are configured; live tests skip without a real key.
+
+Frontend checks (CI runs these, plus the offline backend tests, on every push via `.github/workflows/ci.yml`):
+
+```bash
+cd frontend
+npx next typegen          # route types that tsc needs
+npx tsc --noEmit
+npx eslint app components lib
+npx next build
+```
 
 ### Evals
 
@@ -130,7 +151,13 @@ python -m evals.run            # needs GEMINI_API_KEY; skips cleanly without one
 4. Before their first message, each person reads a short "How Mediator works" card (AI, privacy, the team can see rooms, stop anytime, not for emergencies) and accepts it. Each person talks in their private chat, then taps **I'm ready to share**. The mediator drafts a short summary of their side from their own chat; they edit it and approve the exact words the other person will read. Approved text is safety-checked before it is released.
 5. When both have shared, the joint view shows each side in its own approved words, a "where you overlap" note, and ideas drawn only from those two texts. Nothing else from either private chat is shared.
 6. Each person answers every idea privately (*Works for me* / *Needs a change* / *Not for me*) and can suggest their own. You only see the other person's answer once you've given yours. Ideas both accept become agreed.
-7. Either person drafts the agreement: the agreed ideas word for word, plus a neutral summary and notes on anything vague. Changing an answer clears an unsigned draft. The room is resolved only when **both** sign the same version.
+   Any idea has a private **Think it through** option: three questions (what happens without an agreement, whether it works day to day, how the other person might see it). Both people get the same three kinds of question, and only the person who asked sees them.
+7. Either person drafts the agreement: the agreed ideas word for word, plus a neutral summary and notes on anything vague. Changing an answer clears an unsigned draft. The room is resolved only when **both** sign the same version. When signing, each person picks when to be checked in with (1 week, 2 weeks, 1 month or never).
+8. At check-in time each person answers privately how each term is going. Neither sees the other's answers; once both have answered, each sees only which terms their accounts differ on ("accounts differ"), never who is right. Either can then reopen the joint session; the signed agreement is kept on record.
+
+Each person can pick the mediator's language (English, Hinglish, or Hindi in Devanagari) on the consent card or in **Options**. In the joint view, the other person's approved words can be shown with a translation into any of the three. It is labelled as a translation by Mediator, and the original always stays on screen.
+
+The Diagnostician picks a mediation style for the joint stage (facilitative, transformative or narrative), and the "where you overlap" note and the ideas are written in that style.
 
 Either person can use **Options → Leave this session**, **Talk to a person** or **Delete my data** at any time; Person A can also delete the whole room. Person A's invite link works for `INVITE_TTL_DAYS` if unused, can be replaced from the room until the other person joins, and is hidden from Person A once they have joined. Both pause the room; only the person who stopped it sees why, and a *Talk to a person* request shows up as a `referral` in the admin portal. Signed-in people see **Your rooms** on the home page; invited people's links are remembered on their device.
 
@@ -138,6 +165,6 @@ Crisis / severe-harm phrases halt the room. The person who wrote them sees India
 
 ## Out of scope for this local MVP
 
-A full legal/clinical safety review, and rate limits shared across several backend instances (the built-in limits are per process).
+A full legal/clinical safety review; rate limits and live updates shared across several backend instances (both are per process, so run one instance); regional languages beyond English, Hinglish and Hindi.
 
 Example dispute scripts for manual testing live in `backend/tests/fixtures/scenarios.json`.

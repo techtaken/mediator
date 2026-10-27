@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends
 
 from app.auth import job_or_admin
 from app.config import get_settings
+from app.followup_store import open_due_followups
 from app.retention import purge_old_rooms, scrub_audit_reasons
 
 logger = logging.getLogger(__name__)
@@ -27,3 +28,11 @@ def run_retention(caller: str = Depends(job_or_admin)):
     }
     logger.info("retention job run by %s: %s", caller, result)
     return result
+
+
+@router.post("/followups")
+def run_followups(caller: str = Depends(job_or_admin)):
+    """Open check-ins whose date has come. Run hourly."""
+    opened = open_due_followups()
+    logger.info("follow-up job run by %s: opened %d", caller, opened)
+    return {"opened": opened}

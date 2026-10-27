@@ -34,6 +34,8 @@ def db():
         "app.joint_store.get_supabase",
         "app.agents.store.get_supabase",
         "app.auth.get_supabase",
+        "app.followup_store.get_supabase",
+        "app.retention.get_supabase",
     )
     patches = [patch(target, return_value=fake) for target in targets]
     for item in patches:

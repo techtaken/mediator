@@ -4,6 +4,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 SessionStatus = Literal["intake", "building_joint", "joint_review", "resolved", "halted"]
 Party = Literal["user_a", "user_b", "ai"]
+Language = Literal["en", "hinglish", "hi"]
 
 
 class CreateSessionBody(BaseModel):
@@ -47,6 +48,8 @@ class SessionOut(BaseModel):
     # Rooms are removed this many days after they open (0: kept until deleted).
     retention_days: int = 0
     my_data_deleted: bool = False
+    # This party's language for the mediator's replies (None: match how they write).
+    my_language: Language | None = None
 
 
 class DeletedOut(BaseModel):
@@ -103,6 +106,13 @@ class IdeaOut(BaseModel):
     other_response: Literal["yes", "change", "no"] | None = None
     other_note: str | None = None
     agreed: bool = False
+    # This party's private "think it through" questions, if they asked for them.
+    my_questions: list["RealityQuestionOut"] = Field(default_factory=list)
+
+
+class RealityQuestionOut(BaseModel):
+    type: Literal["alternative", "practical", "their_view"]
+    question: str
 
 
 class AgreementOut(BaseModel):
@@ -120,6 +130,8 @@ class JointStateOut(BaseModel):
     ideas: list[IdeaOut]
     agreed_count: int
     agreement: AgreementOut | None = None
+    # The joint session was opened again after a check-in.
+    reopened: bool = False
 
 
 class SuggestIdeaBody(BaseModel):
@@ -137,6 +149,49 @@ class RespondBody(BaseModel):
 
 class SignBody(BaseModel):
     version: int
+    # Days until this person's private check-in (0: no check-in). None: the default.
+    checkin_days: Literal[0, 7, 14, 30] | None = None
+
+
+class LanguageBody(BaseModel):
+    language: Language
+
+
+class TranslationOut(BaseModel):
+    language: Language
+    original: str
+    # None when no checked translation could be made; the original always shows.
+    translation: str | None = None
+
+
+class TermStatus(BaseModel):
+    term: int = Field(ge=0, le=50)
+    status: Literal["kept", "partly", "not_kept"]
+
+
+class CheckInBody(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    term_status: list[TermStatus] = Field(max_length=50)
+    satisfaction: int = Field(ge=1, le=5)
+    new_issues: str | None = Field(default=None, max_length=500)
+    wants_to_talk: bool = False
+
+
+class FollowUpView(BaseModel):
+    status: Literal["none", "scheduled", "open", "answered"]
+    round: int = 0
+    due_at: str | None = None
+    terms: list[str] = Field(default_factory=list)
+    # Only this person's own answers, never the other's.
+    my_answers: dict | None = None
+    reply: str | None = None
+    other_answered: bool = False
+    # False when the other person has no check-in this round (they opted out).
+    other_checking_in: bool = False
+    # Term numbers the two accounts differ on, once both have answered.
+    accounts_differ: list[int] = Field(default_factory=list)
+    can_reopen: bool = False
 
 
 class JointSummaryOut(BaseModel):
@@ -145,3 +200,6 @@ class JointSummaryOut(BaseModel):
     common_ground: str | None = None
     compromises: list[str]
     created_at: str
+
+
+IdeaOut.model_rebuild()

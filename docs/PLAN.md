@@ -1,4 +1,4 @@
-> **Status (2026-10-27):** Phases 0 and 1 are on `phase0-agent-hardening`. Phase 2 (evals, prompt-injection hardening, observability, abuse protection, retention) is on `phase2-3-quality-and-growth`; see `docs/PHASE2-3_NOTES.md`. Parts 1–2 describe the code before Phase 0.
+> **Status (2026-10-27):** Phases 0 and 1 are on `phase0-agent-hardening`. Phases 2 and 3 are on `phase2-3-quality-and-growth`: Phase 2 covers evals, prompt-injection hardening, observability, abuse protection and retention; Phase 3 covers CI and deploy configs, check-ins, the referral inbox, live updates, languages, reality checks and mediation style. See `docs/PHASE2-3_NOTES.md`. Parts 1–2 describe the code before Phase 0.
 
 # Mediator — Code Review, Doc Gap Analysis & Next-Steps Plan
 

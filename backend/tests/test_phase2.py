@@ -44,6 +44,7 @@ PATCH_TARGETS = (
     "app.agents.telemetry.get_supabase",
     "app.auth.get_supabase",
     "app.retention.get_supabase",
+    "app.followup_store.get_supabase",
 )
 
 
