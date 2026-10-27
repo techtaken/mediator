@@ -1,9 +1,9 @@
 import logging
+import secrets
+from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
-
-from datetime import datetime, timezone
 
 from app.agents.pipeline import check_share, draft_share, handle_party_turn, run_joint_pipeline, share_severity
 from app.agents.state import (
@@ -23,7 +23,10 @@ from app.agents.store import (
     save_state,
     state_version,
 )
+from app.agents.telemetry import track_calls
 from app.auth import Actor, load_session, require_logged_in, resolve_actor
+from app.ratelimit import limit_messages, limit_session_creation, limit_writes
+from app.retention import delete_party_data, delete_room
 from app.joint_store import now_iso, seed_ideas
 from app.config import get_settings
 from app.db import get_supabase
@@ -31,6 +34,7 @@ from app.safety import HELP_MESSAGE, HELPLINES, PAUSED_FOR_OTHER_MESSAGE, is_cri
 from app.schemas import (
     ApproveShareBody,
     CreateSessionBody,
+    DeletedOut,
     JointSummaryOut,
     MessageOut,
     ReadyBody,
@@ -101,9 +105,15 @@ def _halt_view(session: dict, actor: Actor) -> str | None:
     return "other"
 
 
+def _other_joined(session: dict) -> bool:
+    return bool(session.get("consented_b_at"))
+
+
 def _session_out(session: dict, actor: Actor) -> SessionOut:
     invite = None
-    if actor.party == "user_a":
+    # Once the other person has joined, the link is their key to their own
+    # room, so it is no longer shown to Person A.
+    if actor.party == "user_a" and not _other_joined(session):
         invite = _invite_link(session["id"], session["invite_token_b"])
     halt_view = _halt_view(session, actor)
     return SessionOut(
@@ -123,7 +133,19 @@ def _session_out(session: dict, actor: Actor) -> SessionOut:
         helplines=HELPLINES if halt_view == "self" else [],
         my_share=_get_share(session["id"], actor.party).get("approved_text"),
         i_consented=bool(session.get(_consent_field(actor.party))),
+        invite_expires_at=session.get("invite_expires_at") if invite else None,
+        other_joined=_other_joined(session) if actor.party == "user_a" else True,
+        retention_days=get_settings().retention_days,
+        my_data_deleted=bool(session.get(_deleted_field(actor.party))),
     )
+
+
+def _deleted_field(party_role: str) -> str:
+    return "data_deleted_a_at" if party_role == "user_a" else "data_deleted_b_at"
+
+
+def _invite_expiry() -> str:
+    return (datetime.now(timezone.utc) + timedelta(days=get_settings().invite_ttl_days)).isoformat()
 
 
 def _consent_field(party_role: str) -> str:
@@ -259,7 +281,8 @@ def _build_joint(session: dict) -> bool:
     sid = session["id"]
     supabase = get_supabase()
     try:
-        built = run_joint_pipeline(state=load_state(session))
+        with track_calls(sid):
+            built = run_joint_pipeline(state=load_state(session))
         try:
             save_state(sid, built["state"], state_version(session))
         except StateConflict:
@@ -277,7 +300,19 @@ def _build_joint(session: dict) -> bool:
             on_conflict="session_id",
         ).execute()
         seed_ideas(sid, built["compromises"])
-        supabase.table("sessions").update({"status": "joint_review"}).eq("id", sid).execute()
+        opened = (
+            supabase.table("sessions")
+            .update({"status": "joint_review"})
+            .eq("id", sid)
+            .eq("status", "building_joint")
+            .execute()
+        )
+        if not opened.data:
+            # The room was stopped (or data deleted) while this ran. Nobody has
+            # seen this joint view, so don't keep it.
+            supabase.table("joint_ideas").delete().eq("session_id", sid).execute()
+            supabase.table("joint_summaries").delete().eq("session_id", sid).execute()
+            return False
         return True
     except Exception:
         logger.exception("joint build failed for %s", sid)
@@ -293,6 +328,7 @@ def _maybe_build_summary(session: dict) -> bool:
 
 @router.post("/sessions", response_model=SessionOut)
 def create_session(body: CreateSessionBody, user_id: str = Depends(require_logged_in)):
+    limit_session_creation(user_id)
     supabase = get_supabase()
     inserted = (
         supabase.table("sessions")
@@ -303,6 +339,7 @@ def create_session(body: CreateSessionBody, user_id: str = Depends(require_logge
                 "relationship_context": body.relationship_context.strip() or None,
                 "status": "intake",
                 "mediation_state": {},
+                "invite_expires_at": _invite_expiry(),
             }
         )
         .execute()
@@ -326,7 +363,7 @@ def create_session(body: CreateSessionBody, user_id: str = Depends(require_logge
 @router.get("/sessions/{session_id}", response_model=SessionOut)
 def get_session(ctx: tuple[dict, Actor] = Depends(get_actor)):
     session, actor = ctx
-    if actor.party == "user_b":
+    if actor.party == "user_b" and session["status"] == "intake" and not session.get(_deleted_field("user_b")):
         existing = (
             get_supabase()
             .table("messages")
@@ -376,6 +413,7 @@ def send_message(body: SendMessageBody, ctx: tuple[dict, Actor] = Depends(get_ac
     if session["user_a_ready" if actor.party == "user_a" else "user_b_ready"]:
         raise HTTPException(status_code=409, detail="You've already shared. Withdraw it to keep talking.")
 
+    limit_messages(session["id"], actor.party)
     text = body.content.strip()
     if is_crisis_or_severe_harm(text):
         _halt(session["id"], actor.party, "safety")
@@ -387,14 +425,15 @@ def send_message(body: SendMessageBody, ctx: tuple[dict, Actor] = Depends(get_ac
     turn = None
     for attempt in range(2):
         try:
-            turn = handle_party_turn(
-                party=party_code(actor.party),
-                message=text,
-                state=load_state(session),
-                private=load_private(session["id"], actor.party),
-                relationship_context=session.get("relationship_context") or "",
-                topic=session.get("topic"),
-            )
+            with track_calls(session["id"]):
+                turn = handle_party_turn(
+                    party=party_code(actor.party),
+                    message=text,
+                    state=load_state(session),
+                    private=load_private(session["id"], actor.party),
+                    relationship_context=session.get("relationship_context") or "",
+                    topic=session.get("topic"),
+                )
             persist_turn(session["id"], actor.party, turn.state, turn.private, state_version(session))
             break
         except StateConflict:
@@ -443,6 +482,7 @@ def draft_my_share(ctx: tuple[dict, Actor] = Depends(get_actor)):
     session, actor = ctx
     _require_intake(session)
     _require_consent(session, actor)
+    limit_writes(session["id"], actor.party)
     existing = _get_share(session["id"], actor.party)
     if existing.get("approved_text"):
         raise HTTPException(status_code=409, detail=ALREADY_SHARED_DETAIL)
@@ -452,13 +492,14 @@ def draft_my_share(ctx: tuple[dict, Actor] = Depends(get_actor)):
         raise HTTPException(status_code=503, detail="Could not load your conversation. Please try again.") from exc
 
     state = load_state(session)
-    drafted = draft_share(
-        party=party_code(actor.party),
-        transcript=_own_transcript(session["id"], actor.party),
-        private=private,
-        topic=session.get("topic"),
-        state=state,
-    )
+    with track_calls(session["id"]):
+        drafted = draft_share(
+            party=party_code(actor.party),
+            transcript=_own_transcript(session["id"], actor.party),
+            private=private,
+            topic=session.get("topic"),
+            state=state,
+        )
     try:
         save_state(session["id"], state, state_version(session))
     except (StateConflict, PersistError):
@@ -482,6 +523,7 @@ def approve_my_share(
     session, actor = ctx
     _require_intake(session)
     _require_consent(session, actor)
+    limit_writes(session["id"], actor.party)
     if _get_share(session["id"], actor.party).get("approved_text"):
         raise HTTPException(status_code=409, detail=ALREADY_SHARED_DETAIL)
     code = party_code(actor.party)
@@ -491,7 +533,8 @@ def approve_my_share(
         raise HTTPException(status_code=409, detail=NOT_YET_READY_DETAIL)
 
     try:
-        safety = check_share(party=code, text=text, state=state)
+        with track_calls(session["id"]):
+            safety = check_share(party=code, text=text, state=state)
     except Exception as exc:
         logger.exception("share safety check failed for %s", session["id"])
         raise HTTPException(status_code=503, detail="We couldn't check your text just now. Please try again.") from exc
@@ -623,3 +666,78 @@ def get_summary(ctx: tuple[dict, Actor] = Depends(get_actor)):
         compromises=list(compromises),
         created_at=row["created_at"],
     )
+
+
+@router.post("/sessions/{session_id}/invite/rotate", response_model=SessionOut)
+def rotate_invite(ctx: tuple[dict, Actor] = Depends(get_actor)):
+    """Person A replaces the invite link; the old one stops working at once.
+
+    Only before the other person has joined: after that the link is their key
+    to their own private room, and replacing it would lock them out.
+    """
+    session, actor = ctx
+    if actor.party != "user_a":
+        raise HTTPException(status_code=403, detail="Only the person who opened the room can change the link.")
+    if _other_joined(session):
+        raise HTTPException(status_code=409, detail="They've already joined, so the link can't be changed.")
+    if session["status"] != "intake":
+        raise HTTPException(status_code=409, detail="This room is no longer open to new people.")
+    limit_writes(session["id"], actor.party)
+    get_supabase().table("sessions").update(
+        {
+            "invite_token_b": secrets.token_hex(24),
+            "invite_expires_at": _invite_expiry(),
+            "invite_rotated_at": now_iso(),
+        }
+    ).eq("id", session["id"]).execute()
+    _update_state(
+        session,
+        lambda state: append_audit(state, {"stage": state.get("stage"), "agent": "INVITE", "type": "invite_rotated"}),
+    )
+    return _session_out(load_session(session["id"]), actor)
+
+
+@router.post("/sessions/{session_id}/delete-my-data", response_model=SessionOut)
+def delete_my_data(ctx: tuple[dict, Actor] = Depends(get_actor)):
+    """Delete this person's private chat, private memory and share drafts.
+
+    An open room is ended for both people first (the other person sees only a
+    neutral pause). Words this person approved that the other has already read
+    in the joint view stay there, since they were shared with consent.
+    """
+    session, actor = ctx
+    sid = session["id"]
+    code = party_code(actor.party)
+    shared_already = session["status"] in ("joint_review", "resolved") or (
+        session["status"] == "halted" and bool(_joint_exists(sid))
+    )
+
+    def forget(state: dict) -> None:
+        if not shared_already:
+            set_approved_share(state, code, None)
+        append_audit(state, {"stage": state.get("stage"), "agent": "PARTY", "type": f"data_deleted_{actor.party}"})
+
+    _update_state(session, forget)
+    if session["status"] in STOPPABLE:
+        _halt(sid, actor.party, "withdrawn")
+    delete_party_data(sid, actor.party, keep_approved_share=shared_already)
+    update = {_deleted_field(actor.party): now_iso()}
+    if not shared_already:
+        update["user_a_ready" if actor.party == "user_a" else "user_b_ready"] = False
+    get_supabase().table("sessions").update(update).eq("id", sid).execute()
+    return _session_out(load_session(sid), actor)
+
+
+def _joint_exists(session_id: str) -> bool:
+    rows = get_supabase().table("joint_summaries").select("session_id").eq("session_id", session_id).limit(1).execute()
+    return bool(rows.data)
+
+
+@router.delete("/sessions/{session_id}", response_model=DeletedOut)
+def delete_whole_room(ctx: tuple[dict, Actor] = Depends(get_actor)):
+    """Person A deletes the room and everything in it, for both people."""
+    session, actor = ctx
+    if actor.party != "user_a":
+        raise HTTPException(status_code=403, detail="Only the person who opened the room can delete it.")
+    delete_room(session["id"])
+    return DeletedOut(deleted=True)

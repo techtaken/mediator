@@ -1,17 +1,13 @@
-import os
-
 import pytest
 
 from app.agents.llm import call_agent, dumps
 from app.agents.pipeline import CAUCUS_FALLBACK, NEUTRAL_FALLBACK, handle_party_turn
 from app.agents.state import empty_private, new_shared_state, shared_view
+from tests.conftest import has_real_gemini_key
 
 pytestmark = [
     pytest.mark.live,
-    pytest.mark.skipif(
-        not (os.getenv("GEMINI_API_KEY") or os.path.exists(os.path.join(os.path.dirname(__file__), "..", ".env"))),
-        reason="No Gemini key configured; skip live Gemini API tests.",
-    ),
+    pytest.mark.skipif(not has_real_gemini_key(), reason="No Gemini key configured; skip live Gemini API tests."),
 ]
 
 

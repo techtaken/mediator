@@ -282,7 +282,7 @@ def test_b_caucus_gets_topic_attributed_to_a():
     handle_party_turn(party="B", message="hi", state=new_shared_state("D-1"), private=empty_private(),
                       topic=GOA, caller=agents)
     framing = agents.of("CAUCUS")[0]["mapping"]["DISPUTE_TOPIC"]
-    assert f'"{GOA}"' in framing
+    assert f"<<<PARTY_DATA dispute_topic>>>\n{GOA}\n<<<END_PARTY_DATA dispute_topic>>>" in framing
     assert "The OTHER person (A) opened this room" in framing
     assert "did not write this" in framing and "not a fact" in framing
     assert '"I", "me" or "my" in it means A' in framing

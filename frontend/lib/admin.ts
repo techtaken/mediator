@@ -42,12 +42,26 @@ export type PrivateMemory = {
   updated_at: string;
 };
 
+export type CallStats = {
+  calls: number;
+  failed: number;
+  attempts: number;
+  prompt_tokens: number;
+  output_tokens: number;
+  latency_ms: number;
+  avg_latency_ms: number;
+  estimated_cost_usd: number;
+  price_per_m: { input: number; output: number };
+  by_role: Record<string, { calls: number; failed: number; prompt_tokens: number; output_tokens: number; latency_ms: number }>;
+};
+
 export type AdminSessionDetail = {
   session: Omit<AdminSessionRow, "messages_a" | "messages_b" | "last_activity"> & Record<string, unknown>;
   rooms: { user_a: ChatMessage[]; user_b: ChatMessage[] };
   private_memories: Partial<Record<"user_a" | "user_b", PrivateMemory>>;
   state: Record<string, unknown>;
   audit_events: AuditEvent[];
+  agent_calls: CallStats;
   joint: {
     ideas: { id: string; text: string; source: string; position: number }[];
     responses: { idea_id: string; party_role: "user_a" | "user_b"; response: string; note: string | null }[];

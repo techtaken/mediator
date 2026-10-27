@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.routers.admin import router as admin_router
+from app.routers.jobs import router as jobs_router
 from app.routers.joint import router as joint_router
 from app.routers.sessions import router as sessions_router
 
@@ -19,6 +20,7 @@ app.add_middleware(
 app.include_router(sessions_router)
 app.include_router(joint_router)
 app.include_router(admin_router)
+app.include_router(jobs_router)
 
 
 @app.get("/health")

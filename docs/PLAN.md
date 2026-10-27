@@ -1,4 +1,4 @@
-> **Status (2026-10-26):** Phase 0 is implemented on branch `phase0-agent-hardening`. Parts 1–2 describe the code *before* that work; Phase 1 onward is still to do.
+> **Status (2026-10-27):** Phases 0 and 1 are on `phase0-agent-hardening`. Phase 2 (evals, prompt-injection hardening, observability, abuse protection, retention) is on `phase2-3-quality-and-growth`; see `docs/PHASE2-3_NOTES.md`. Parts 1–2 describe the code before Phase 0.
 
 # Mediator — Code Review, Doc Gap Analysis & Next-Steps Plan
 

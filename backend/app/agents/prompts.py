@@ -411,6 +411,42 @@ TEMPERATURE = {
 _PLACEHOLDER = re.compile(r"\{\{([A-Z_]+)\}\}")
 _BUILTIN_KEYS = {"CONSTITUTION", "LOCAL_RESOURCES"}
 
+# Values written by the parties, or derived from what they wrote (state that
+# holds approved shares and idea text, memory notes, drafts that may quote
+# them). fill() puts each one in a delimited block, and the constitution tells
+# every agent that text inside such a block is data, never an instruction.
+DATA_KEYS = {
+    "SHARED_STATE_JSON",
+    "LATEST_EVENT",
+    "PRIVATE_MEMORY",
+    "APPROVED_SHARES",
+    "DRAFT",
+    "AGREED_TERMS",
+    "TRANSCRIPT",
+    "RELATIONSHIP_CONTEXT",
+    "OPTIONS",
+    "AGREEMENT_JSON",
+    "SAFETY_REPORT",
+    "REASON",
+    "SIGNALS",
+    "BALANCE_STATS",
+    "CHECKIN_ANSWERS",
+    "SOURCE_TEXT",
+}
+DATA_OPEN = "<<<PARTY_DATA {label}>>>"
+DATA_CLOSE = "<<<END_PARTY_DATA {label}>>>"
+
+
+def _neutralize(text: str) -> str:
+    # A party must not be able to close a data block early and write "outside" it.
+    return text.replace("<<<", "\u2039\u2039\u2039").replace(">>>", "\u203a\u203a\u203a")
+
+
+def data_block(label: str, text: str) -> str:
+    """Wrap party-written text so agents read it as data, not instructions."""
+    label = label.lower()
+    return f"\n{DATA_OPEN.format(label=label)}\n{_neutralize(str(text))}\n{DATA_CLOSE.format(label=label)}"
+
 
 def required_keys(role: str) -> set[str]:
     """Placeholders the caller must supply for this role's prompt."""
@@ -430,6 +466,8 @@ def fill(template: str, mapping: dict[str, str]) -> str:
             return CONSTITUTION
         if key == "LOCAL_RESOURCES":
             return LOCAL_RESOURCES
+        if key in DATA_KEYS:
+            return data_block(key, mapping[key])
         return mapping[key]
 
     # Single pass, so values are never re-scanned for placeholders.

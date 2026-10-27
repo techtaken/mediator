@@ -5,6 +5,7 @@ from typing import Any
 
 from app.agents.state import SHARED_PARTY_KEYS, empty_private, new_shared_state, normalize_private, pending_audit
 from app.db import get_supabase
+from app.retention import structured_audit
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,7 @@ def save_state(session_id: str, state: dict[str, Any], expected_version: int) ->
         result = (
             get_supabase()
             .table("sessions")
-            .update({"mediation_state": state, "state_version": new_version})
+            .update({"mediation_state": storable_state(state), "state_version": new_version})
             .eq("id", session_id)
             .eq("state_version", expected_version)
             .execute()
@@ -84,6 +85,18 @@ def save_state(session_id: str, state: dict[str, Any], expected_version: int) ->
         raise StateConflict(session_id)
     _insert_audit(session_id, pending)
     return new_version
+
+
+def storable_state(state: dict[str, Any]) -> dict[str, Any]:
+    """The shared state as written to the sessions row.
+
+    The in-row audit log keeps only structured fields (stage, agent, gate...).
+    Agents' free-text reasons go to mediation_audit_events alone, where they
+    are cleared after the audit retention period.
+    """
+    stored = dict(state)
+    stored["audit_log"] = [structured_audit(entry) for entry in state.get("audit_log") or [] if isinstance(entry, dict)]
+    return stored
 
 
 def save_private(session_id: str, party_role: str, private: dict[str, Any]) -> None:

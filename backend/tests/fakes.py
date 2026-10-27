@@ -18,6 +18,16 @@ class Result:
     data: list[dict[str, Any]]
 
 
+def _compare(actual: Any, op: str, value: Any) -> bool:
+    if actual is None:
+        return False
+    if op == "lt":
+        return actual < value
+    if op == "lte":
+        return actual <= value
+    return actual > value
+
+
 class FakeQuery:
     def __init__(self, db: "FakeSupabase", table: str):
         self.db = db
@@ -25,6 +35,7 @@ class FakeQuery:
         self.op = "select"
         self.payload: Any = None
         self.filters: list[tuple[str, Any]] = []
+        self.compare: list[tuple[str, str, Any]] = []
         self.limit_n: int | None = None
         self.offset_n = 0
         self.order_by: str | None = None
@@ -57,6 +68,23 @@ class FakeQuery:
         self.filters.append((column, value))
         return self
 
+    def lt(self, column: str, value: Any) -> "FakeQuery":
+        self.compare.append((column, "lt", value))
+        return self
+
+    def lte(self, column: str, value: Any) -> "FakeQuery":
+        self.compare.append((column, "lte", value))
+        return self
+
+    def gt(self, column: str, value: Any) -> "FakeQuery":
+        self.compare.append((column, "gt", value))
+        return self
+
+    def is_(self, column: str, value: Any) -> "FakeQuery":
+        # supabase-py takes "null" for IS NULL.
+        self.filters.append((column, None if value in ("null", None) else value))
+        return self
+
     def in_(self, column: str, values: list[Any]) -> "FakeQuery":
         self.in_filters.append((column, list(values)))
         return self
@@ -75,8 +103,10 @@ class FakeQuery:
 
     # execution -------------------------------------------------------------
     def _match(self, row: dict[str, Any]) -> bool:
-        return all(row.get(column) == value for column, value in self.filters) and all(
-            row.get(column) in values for column, values in self.in_filters
+        return (
+            all(row.get(column) == value for column, value in self.filters)
+            and all(row.get(column) in values for column, values in self.in_filters)
+            and all(_compare(row.get(column), op, value) for column, op, value in self.compare)
         )
 
     def execute(self) -> Result:
@@ -107,6 +137,12 @@ class FakeQuery:
         if self.op == "delete":
             removed = [copy.deepcopy(row) for row in rows if self._match(row)]
             rows[:] = [row for row in rows if not self._match(row)]
+            if self.table_name == "sessions":
+                # Like "on delete cascade" on every session_id foreign key.
+                gone = {row["id"] for row in removed}
+                for name, table in self.db.tables.items():
+                    if name != "sessions":
+                        table[:] = [row for row in table if row.get("session_id") not in gone]
             return Result(removed)
         if self.op == "upsert":
             keys = [key.strip() for key in (self.on_conflict or "id").split(",")]
@@ -144,6 +180,8 @@ class FakeSupabase:
             row.setdefault("halted_reason", None)
         if table == "messages":
             row.setdefault("is_private", True)
+        if table == "mediation_audit_events":
+            row.setdefault("reason_scrubbed", False)
         return row
 
     def rows(self, table: str, **filters: Any) -> list[dict[str, Any]]:

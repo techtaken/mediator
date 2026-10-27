@@ -23,6 +23,16 @@ export function getInviteToken(sessionId: string) {
   }
 }
 
+/** An API error that keeps the HTTP status, so pages can react to 404 / 410. */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
 export async function request<T>(
   path: string,
   init: RequestInit & { accessToken?: string | null; inviteToken?: string | null } = {},
@@ -45,7 +55,7 @@ export async function request<T>(
     } catch {
       /* ignore */
     }
-    throw new Error(detail);
+    throw new ApiError(detail, res.status);
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
@@ -155,4 +165,19 @@ export function signAgreement(id: string, version: number, auth: AuthOpts) {
     body: JSON.stringify({ version }),
     ...auth,
   });
+}
+
+/** Person A replaces the invite link before the other person joins. */
+export function rotateInvite(id: string, auth: AuthOpts) {
+  return request<Session>(`/api/sessions/${id}/invite/rotate`, { method: "POST", ...auth });
+}
+
+/** Delete this person's private chat, notes and drafts. */
+export function deleteMyData(id: string, auth: AuthOpts) {
+  return request<Session>(`/api/sessions/${id}/delete-my-data`, { method: "POST", ...auth });
+}
+
+/** Person A deletes the whole room for both people. */
+export function deleteRoom(id: string, auth: AuthOpts) {
+  return request<{ deleted: boolean }>(`/api/sessions/${id}`, { method: "DELETE", ...auth });
 }

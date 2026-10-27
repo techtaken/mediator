@@ -10,7 +10,9 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.agents.telemetry import summarize
 from app.auth import Admin, load_session, require_admin
+from app.config import get_settings
 from app.db import get_supabase
 from app.joint_store import get_agreement, list_ideas, list_responses
 
@@ -129,6 +131,8 @@ def session_detail(session_id: str, admin: Admin = Depends(require_admin)):
     summary = (
         supabase.table("joint_summaries").select("*").eq("session_id", session_id).limit(1).execute().data or []
     )
+    settings = get_settings()
+    calls = supabase.table("agent_calls").select("*").eq("session_id", session_id).execute().data or []
 
     return {
         "session": _session_summary(session),
@@ -136,6 +140,7 @@ def session_detail(session_id: str, admin: Admin = Depends(require_admin)):
         "private_memories": {row["party_role"]: row for row in memories},
         "state": session.get("mediation_state") or {},
         "audit_events": audit,
+        "agent_calls": summarize(calls, settings.gemini_price_input_per_m, settings.gemini_price_output_per_m),
         "joint_summary": summary[0] if summary else None,
         "joint": {
             "ideas": list_ideas(session_id),

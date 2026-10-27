@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { use, useEffect, useState } from "react";
-import { fetchAdminSession, type AdminSessionDetail } from "@/lib/admin";
+import { fetchAdminSession, type AdminSessionDetail, type CallStats } from "@/lib/admin";
 import type { ChatMessage } from "@/lib/types";
 import { useAuth } from "@/lib/useAuth";
 
@@ -31,6 +31,50 @@ function Room({ title, messages }: { title: string; messages: ChatMessage[] }) {
           </li>
         ))}
       </ol>
+    </section>
+  );
+}
+
+function Calls({ stats }: { stats: CallStats }) {
+  const roles = Object.entries(stats.by_role);
+  return (
+    <section>
+      <h2 className="font-semibold">Agent calls</h2>
+      <p className="mt-1 text-muted">
+        {stats.calls} calls ({stats.failed} failed, {stats.attempts} attempts) · {stats.prompt_tokens.toLocaleString()} in /{" "}
+        {stats.output_tokens.toLocaleString()} out tokens · avg {(stats.avg_latency_ms / 1000).toFixed(1)}s · est. $
+        {stats.estimated_cost_usd.toFixed(4)}
+      </p>
+      <p className="text-xs text-muted">
+        Estimate at ${stats.price_per_m.input}/M input and ${stats.price_per_m.output}/M output tokens (set
+        GEMINI_PRICE_INPUT_PER_M / GEMINI_PRICE_OUTPUT_PER_M).
+      </p>
+      {roles.length ? (
+        <table className="mt-2 w-full border-collapse text-left text-xs">
+          <thead>
+            <tr className="border-b">
+              <th className="p-1">Agent</th>
+              <th className="p-1">Calls</th>
+              <th className="p-1">Failed</th>
+              <th className="p-1">Tokens in / out</th>
+              <th className="p-1">Avg latency</th>
+            </tr>
+          </thead>
+          <tbody>
+            {roles.map(([role, row]) => (
+              <tr key={role} className="border-b">
+                <td className="p-1">{role}</td>
+                <td className="p-1">{row.calls}</td>
+                <td className="p-1">{row.failed}</td>
+                <td className="p-1">
+                  {row.prompt_tokens.toLocaleString()} / {row.output_tokens.toLocaleString()}
+                </td>
+                <td className="p-1">{(row.latency_ms / row.calls / 1000).toFixed(1)}s</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : null}
     </section>
   );
 }
@@ -105,6 +149,8 @@ export default function AdminSessionPage({ params }: { params: Promise<{ id: str
         <Room title="Person A's private room" messages={rooms.user_a ?? []} />
         <Room title="Person B's private room" messages={rooms.user_b ?? []} />
       </div>
+
+      {data.agent_calls ? <Calls stats={data.agent_calls} /> : null}
 
       <section>
         <h2 className="font-semibold">Safety flags</h2>

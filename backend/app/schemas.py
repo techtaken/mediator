@@ -41,6 +41,16 @@ class SessionOut(BaseModel):
     my_share: str | None = None
     # Whether this party has accepted how Mediator works. Required before chatting.
     i_consented: bool = False
+    # Person A only, while the other person hasn't joined yet.
+    invite_expires_at: str | None = None
+    other_joined: bool = True
+    # Rooms are removed this many days after they open (0: kept until deleted).
+    retention_days: int = 0
+    my_data_deleted: bool = False
+
+
+class DeletedOut(BaseModel):
+    deleted: bool
 
 
 class RoomSummaryOut(BaseModel):

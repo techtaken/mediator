@@ -1,18 +1,22 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { FormEvent, use, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Chat } from "@/components/room/Chat";
 import { ConsentCard } from "@/components/room/ConsentCard";
 import { HaltPanel } from "@/components/room/HaltPanel";
 import { JointView } from "@/components/room/JointView";
-import { RoomMenu } from "@/components/room/RoomMenu";
+import { RoomMenu, type RoomAction } from "@/components/room/RoomMenu";
 import { ShareReview } from "@/components/room/ShareReview";
 import { Steps } from "@/components/room/Steps";
 import { WaitingPanel } from "@/components/room/WaitingPanel";
 import {
+  ApiError,
   acceptConsent,
   askForPerson,
+  deleteMyData,
+  deleteRoom,
   fetchJoint,
   fetchMessages,
   fetchSession,
@@ -20,6 +24,7 @@ import {
   getInviteToken,
   leaveSession,
   retryJoint,
+  rotateInvite,
   sendMessage,
   withdrawShare,
   type AuthOpts,
@@ -49,6 +54,10 @@ async function loadRoom(id: string, auth: AuthOpts) {
   return { session, messages, summary, joint };
 }
 
+function shortDate(value: string | null) {
+  return value ? new Date(value).toLocaleDateString(undefined, { day: "numeric", month: "short" }) : "";
+}
+
 function currentStep(session: Session | null, reviewing: boolean): 0 | 1 | 2 | 3 {
   if (!session || session.status === "intake") {
     return reviewing || session?.my_share ? 1 : 0;
@@ -58,6 +67,7 @@ function currentStep(session: Session | null, reviewing: boolean): 0 | 1 | 2 | 3
 
 export default function RoomPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
+  const router = useRouter();
   const { accessToken, loading: authLoading } = useAuth();
   // Invite tokens live in sessionStorage, so read them only on the client.
   const onClient = useSyncExternalStore(noopSubscribe, () => true, () => false);
@@ -77,8 +87,11 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
+  // The room was deleted (404) or the invite expired (410): stop polling.
+  const [gone, setGone] = useState<"deleted" | "expired" | null>(null);
+  const [confirmRotate, setConfirmRotate] = useState(false);
 
-  const canLoad = onClient && !authLoading && Boolean(auth.accessToken || auth.inviteToken);
+  const canLoad = onClient && !authLoading && Boolean(auth.accessToken || auth.inviteToken) && !gone;
 
   useEffect(() => {
     if (!canLoad) return;
@@ -94,7 +107,11 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
           setError("");
         })
         .catch((err: unknown) => {
-          if (!cancelled) setError(err instanceof Error ? err.message : "Could not load room");
+          if (cancelled) return;
+          if (err instanceof ApiError && (err.status === 404 || err.status === 410)) {
+            setGone(err.status === 404 ? "deleted" : "expired");
+          }
+          setError(err instanceof Error ? err.message : "Could not load room");
         });
     void tick();
     const timer = setInterval(() => void tick(), POLL_MS);
@@ -141,6 +158,26 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     }
   }
 
+  async function onMenu(action: RoomAction) {
+    if (action === "delete_room") {
+      setBusy(true);
+      try {
+        await deleteRoom(id, auth);
+        router.push("/");
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not delete the room");
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+    await run(() => {
+      if (action === "leave") return leaveSession(id, auth);
+      if (action === "human") return askForPerson(id, auth);
+      return deleteMyData(id, auth);
+    });
+  }
+
   async function copyInvite(link: string) {
     try {
       await navigator.clipboard.writeText(link);
@@ -153,6 +190,24 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
 
   if (!onClient || authLoading) {
     return <p className="px-5 py-16 text-muted">Loading…</p>;
+  }
+
+  if (gone) {
+    return (
+      <main className="mx-auto max-w-lg px-5 py-16">
+        <h1 className="font-[family-name:var(--font-display)] text-3xl text-ink">
+          {gone === "deleted" ? "This room is no longer available" : "This invite link has expired"}
+        </h1>
+        <p className="mt-3 text-[15px] leading-relaxed text-muted">
+          {gone === "deleted"
+            ? "It was deleted, or removed after the retention period. Nothing from it is kept."
+            : "Ask the person who invited you to send a new link."}
+        </p>
+        <Link href="/" className="mt-6 inline-block text-sm text-terracotta underline-offset-4 hover:underline">
+          Back to Mediator
+        </Link>
+      </main>
+    );
   }
 
   if (!auth.accessToken && !auth.inviteToken) {
@@ -198,7 +253,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
   } else if (session.status === "halted") {
     body = <HaltPanel session={session} />;
   } else if (needsConsent) {
-    body = <ConsentCard onAccept={() => run(() => acceptConsent(id, auth))} />;
+    body = <ConsentCard retentionDays={session.retention_days} onAccept={() => run(() => acceptConsent(id, auth))} />;
   } else if (session.status !== "intake") {
     body = (
       <JointView
@@ -235,11 +290,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
           </Link>
           <div className="flex items-center gap-2">
             <p className="text-xs text-muted">{isA ? "Your private room" : "Invited · private room"}</p>
-            {canStop ? (
-              <RoomMenu
-                onAction={(action) => run(() => (action === "leave" ? leaveSession(id, auth) : askForPerson(id, auth)))}
-              />
-            ) : null}
+            {session ? <RoomMenu canStop={canStop} isA={isA} onAction={onMenu} /> : null}
           </div>
         </div>
         {session?.status !== "halted" ? <Steps current={currentStep(session, reviewing)} /> : null}
@@ -250,6 +301,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
           </p>
         ) : null}
         {isA && session?.invite_link && session.status === "intake" ? (
+          <>
           <div className="mt-3 flex gap-2">
             <button
               type="button"
@@ -267,8 +319,40 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
               Share on WhatsApp
             </a>
           </div>
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-1 text-xs text-muted">
+            <span>
+              {session.invite_expires_at ? `Link works until ${shortDate(session.invite_expires_at)} if unused` : "Not joined yet"}
+            </span>
+            {confirmRotate ? (
+              <span className="flex items-center gap-2">
+                <span>The old link will stop working.</span>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void run(() => rotateInvite(id, auth)).finally(() => setConfirmRotate(false))}
+                  className="font-medium text-terracotta disabled:opacity-50"
+                >
+                  Make new link
+                </button>
+                <button type="button" onClick={() => setConfirmRotate(false)} className="text-muted">
+                  Cancel
+                </button>
+              </span>
+            ) : (
+              <button type="button" onClick={() => setConfirmRotate(true)} className="underline-offset-4 hover:underline">
+                Sent it to the wrong person? Make a new link
+              </button>
+            )}
+          </div>
+          </>
         ) : null}
       </header>
+
+      {session?.my_data_deleted && session.status !== "halted" ? (
+        <p className="mx-4 mt-3 rounded-2xl bg-teal/10 px-3 py-2 text-sm text-teal">
+          Your private chat and notes have been deleted. What you both agreed to in the joint view is still here.
+        </p>
+      ) : null}
 
       {error && session ? (
         <p role="alert" className="mx-4 mt-3 rounded-2xl bg-terracotta/10 px-3 py-2 text-sm text-terracotta">

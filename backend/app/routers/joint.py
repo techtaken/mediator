@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.agents.pipeline import check_share, share_severity, summarize_agreement
 from app.agents.state import party_code, record_safety_flag
 from app.agents.store import load_state
+from app.agents.telemetry import track_calls
 from app.auth import Actor
 from app.db import get_supabase
 from app.joint_store import (
@@ -37,6 +38,7 @@ from app.routers.sessions import (
     _update_state,
     get_actor,
 )
+from app.ratelimit import limit_writes
 from app.safety import with_helplines
 from app.schemas import (
     AgreementOut,
@@ -129,7 +131,8 @@ def _screen_text(session: dict, actor: Actor, text: str) -> None:
     """
     code = party_code(actor.party)
     try:
-        safety = check_share(party=code, text=text, state=load_state(session))
+        with track_calls(session["id"]):
+            safety = check_share(party=code, text=text, state=load_state(session))
     except Exception as exc:
         logger.exception("joint text safety check failed for %s", session["id"])
         raise HTTPException(status_code=503, detail="We couldn't check that just now. Please try again.") from exc
@@ -166,6 +169,7 @@ def get_joint(ctx: tuple[dict, Actor] = Depends(get_actor)):
 def suggest_idea(body: SuggestIdeaBody, ctx: tuple[dict, Actor] = Depends(get_actor)):
     session, actor = ctx
     _require_open(session)
+    limit_writes(session["id"], actor.party)
     _screen_text(session, actor, body.text)
     idea = add_idea(session["id"], body.text, actor.party)
     # Suggesting an idea means it works for you.
@@ -177,6 +181,7 @@ def suggest_idea(body: SuggestIdeaBody, ctx: tuple[dict, Actor] = Depends(get_ac
 def respond_to_idea(idea_id: str, body: RespondBody, ctx: tuple[dict, Actor] = Depends(get_actor)):
     session, actor = ctx
     _require_open(session)
+    limit_writes(session["id"], actor.party)
     ideas = list_ideas(session["id"])
     if not any(idea["id"] == idea_id for idea in ideas):
         raise HTTPException(status_code=404, detail="Idea not found")
@@ -196,6 +201,7 @@ def respond_to_idea(idea_id: str, body: RespondBody, ctx: tuple[dict, Actor] = D
 def draft_agreement(ctx: tuple[dict, Actor] = Depends(get_actor)):
     session, actor = ctx
     _require_open(session)
+    limit_writes(session["id"], actor.party)
     ideas = list_ideas(session["id"])
     agreed = agreed_idea_ids(ideas, list_responses(session["id"]))
     if not agreed:
@@ -203,7 +209,8 @@ def draft_agreement(ctx: tuple[dict, Actor] = Depends(get_actor)):
     text_by_id = {idea["id"]: idea["text"] for idea in ideas}
     terms = [{"idea_id": idea_id, "text": text_by_id[idea_id]} for idea_id in agreed]
 
-    written = summarize_agreement(state=load_state(session), terms=[term["text"] for term in terms])
+    with track_calls(session["id"]):
+        written = summarize_agreement(state=load_state(session), terms=[term["text"] for term in terms])
     previous = get_agreement(session["id"])
     save_agreement(
         session["id"],
@@ -225,6 +232,7 @@ def draft_agreement(ctx: tuple[dict, Actor] = Depends(get_actor)):
 def sign_agreement(body: SignBody, ctx: tuple[dict, Actor] = Depends(get_actor)):
     session, actor = ctx
     _require_open(session)
+    limit_writes(session["id"], actor.party)
     agreement = get_agreement(session["id"])
     if not agreement:
         raise HTTPException(status_code=409, detail="There is no agreement to sign yet.")

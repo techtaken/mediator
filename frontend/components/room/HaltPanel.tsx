@@ -24,6 +24,21 @@ export function HaltPanel({ session }: { session: Session }) {
     );
   }
 
+  if (session.my_data_deleted && session.halted_reason === "withdrawn") {
+    return (
+      <section className="flex-1 overflow-y-auto px-4 py-8">
+        <h1 className="font-[family-name:var(--font-display)] text-3xl text-ink">Your data has been deleted</h1>
+        <p className="mt-3 text-[15px] leading-relaxed text-muted">
+          Your private chat, the mediator&apos;s notes about you and your drafts are gone. This session has ended; the
+          other person only sees that it&apos;s paused.
+        </p>
+        <Link href="/" className="mt-6 inline-block text-sm text-terracotta underline-offset-4 hover:underline">
+          Back to Mediator
+        </Link>
+      </section>
+    );
+  }
+
   if (session.halted_reason === "withdrawn") {
     return (
       <section className="flex-1 overflow-y-auto px-4 py-8">

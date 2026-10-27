@@ -17,6 +17,10 @@ export type Session = {
   helplines: string[];
   my_share: string | null;
   i_consented: boolean;
+  invite_expires_at: string | null;
+  other_joined: boolean;
+  retention_days: number;
+  my_data_deleted: boolean;
 };
 
 export type RoomSummary = {

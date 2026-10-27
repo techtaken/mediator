@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from app.agents.llm import AgentCaller, call_agent, dumps
+from app.agents.prompts import data_block
 from app.agents.state import (
     PartyKey,
     append_audit,
@@ -74,13 +75,14 @@ def topic_for(party: PartyKey, topic: str | None) -> str:
     text = (topic or "").strip()
     if not text:
         return "Not given."
+    quoted = data_block("dispute_topic", text)
     if party == "A":
         return (
-            f'The person you are talking to (A) opened this room and described it as: "{text}". '
+            f"The person you are talking to (A) opened this room and described it as:{quoted}\n"
             "B has been shown this line as A's description."
         )
     return (
-        f'The OTHER person (A) opened this room and described it as: "{text}". '
+        f"The OTHER person (A) opened this room and described it as:{quoted}\n"
         "The person you are talking to (B) did not write this. It is A's account, not a fact. "
         'Any "I", "me" or "my" in it means A, and any "you" in it means B. '
         'When you mention it, attribute it ("the other person says...") and invite B\'s own side.'

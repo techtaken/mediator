@@ -1,3 +1,5 @@
+import secrets
+from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Annotated, Literal
 
@@ -101,7 +103,44 @@ def resolve_actor(
     if user_id and session.get("created_by") == user_id:
         return session, Actor("user_a", user_id=user_id)
 
-    if x_invite_token and x_invite_token == session.get("invite_token_b"):
+    if x_invite_token and secrets.compare_digest(x_invite_token, str(session.get("invite_token_b") or "")):
+        if invite_expired(session):
+            raise HTTPException(status_code=410, detail=INVITE_EXPIRED_DETAIL)
         return session, Actor("user_b", invite_token=x_invite_token)
 
     raise HTTPException(status_code=403, detail="You cannot access this dispute room")
+
+
+INVITE_EXPIRED_DETAIL = "This invite link has expired. Ask the person who invited you for a new one."
+
+
+def parse_time(value: object) -> datetime | None:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def invite_expired(session: dict, now: datetime | None = None) -> bool:
+    """An invite expires only while unused. Once the invited person has joined
+    (accepted how Mediator works), the link is their key to their own room."""
+    if session.get("consented_b_at"):
+        return False
+    expires = parse_time(session.get("invite_expires_at"))
+    return expires is not None and expires <= (now or datetime.now(timezone.utc))
+
+
+def job_or_admin(
+    authorization: Annotated[str | None, Header()] = None,
+    x_job_token: Annotated[str | None, Header()] = None,
+) -> str:
+    """For maintenance jobs: a scheduler's X-Job-Token, or a signed-in admin."""
+    expected = get_settings().job_token
+    if expected and x_job_token and secrets.compare_digest(x_job_token, expected):
+        return "job"
+    return f"admin:{require_admin(authorization).email}"
