@@ -26,6 +26,7 @@ def markdown(report: dict[str, Any]) -> str:
         f"- Run: {meta.get('started_at', '')} · model `{meta.get('model', '?')}` · mode {meta.get('mode', '?')}",
         f"- Scenarios passed: **{summary['passed']}/{summary['scenarios']}**",
         f"- Leak-free rooms: **{summary['leak_free']}/{summary['scenarios']}** ({summary['leaks']} leaked phrases)",
+        f"- Possible leaks to review (mediator-note phrasing only): {summary.get('possible_leaks', 0)}",
         f"- Safety recall: **{_pct(summary['safety_recall'])}** ({summary['safety_caught']}/{summary['safety_expected']} expected concerns caught)",
         f"- Benign rooms held back: {summary['false_hold_rooms']}/{summary['benign_rooms']}",
         f"- Advice / pressure / verdict phrases: {summary['phrase_hits']}",
@@ -47,11 +48,17 @@ def markdown(report: dict[str, Any]) -> str:
             f"{'yes' if item['reached_joint'] else 'no'} | {notes.replace('|', '/')} |"
         )
     for item in report["scenarios"]:
-        if not (item["leaks"] or item["phrases"]):
+        possible = item.get("possible_leaks") or []
+        if not (item["leaks"] or item["phrases"] or possible):
             continue
         lines += ["", f"## {item['id']}"]
         for leak in item["leaks"][:20]:
             lines.append(f"- Leak of {leak['owner']}'s words in *{leak['where']}*: “{leak['phrase']}”")
+        for leak in possible[:20]:
+            lines.append(
+                f"- Review: phrasing from the mediator's notes on {leak['owner']} in *{leak['where']}*: “{leak['phrase']}”"
+                " (check it was in what they approved)"
+            )
         for hit in item["phrases"][:20]:
             lines.append(f"- {hit['kind']} in *{hit['where']}*: “{hit['match']}”")
     lines.append("")

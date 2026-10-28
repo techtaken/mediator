@@ -188,6 +188,33 @@ def test_options_that_reveal_private_words_are_caught():
     assert any(leak["where"].startswith("joint option") and leak["owner"] == "B" for leak in result.leaks)
 
 
+NOTE_PHRASE = "works a ten hour job and cooks every weekend"
+
+
+def test_mediator_note_phrasing_is_a_review_warning_not_a_failure():
+    # The in-laws false positive: B approved the fact in Hinglish, the joint
+    # agents restated it in English, matching the mediator's English notes on B.
+    def caucus(mapping):
+        notes = f"B {NOTE_PHRASE}" if mapping["PARTY_ID"] == "B" else "A notes"
+        return {"reply_to_party": "I hear you.", "state_updates": {}, "private_notes": notes}
+
+    agents = FakeAgents(CAUCUS=caucus, OPTIONS={"options": [f"Since B {NOTE_PHRASE}, share the cooking."]})
+    result = run_scenario(SCENARIOS["loan-50k"], agents)
+    assert result.passed, result.failures
+    assert not result.leaks
+    assert any(NOTE_PHRASE in leak["phrase"] for leak in result.possible_leaks)
+    assert any("mediator's private notes" in warning for warning in result.warnings)
+    report = markdown(build([result], {"started_at": "now", "model": "fake", "mode": "offline"}))
+    assert "Review: phrasing from the mediator's notes" in report
+
+
+def test_typed_words_still_fail_even_with_notes_present():
+    secret = SCENARIOS["loan-50k"]["party_b_turns"][0]
+    agents = FakeAgents(OPTIONS={"options": [f"Since {secret}, pay in parts."]})
+    result = run_scenario(SCENARIOS["loan-50k"], agents)
+    assert not result.passed and result.leaks
+
+
 def test_advice_and_verdicts_are_caught():
     agents = FakeAgents(CAUCUS={"reply_to_party": "You should pay him back now. Honestly he is wrong.", "state_updates": {}})
     result = run_scenario(SCENARIOS["non-acknowledger"], agents)

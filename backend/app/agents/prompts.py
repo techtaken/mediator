@@ -153,6 +153,7 @@ YOU RECEIVE
 - orchestrator_instruction: {{INSTRUCTION}}
 - approved_shares: {{APPROVED_SHARES}}
 - mediation style: {{STYLE_GUIDE}}
+- language (both people read this): {{LANGUAGE}}
 
 approved_shares holds each party's own approved words; both parties have
 already seen both texts. Your message is "where you overlap": 2-4 short
@@ -179,16 +180,24 @@ YOU RECEIVE
 - approved_shares: {{APPROVED_SHARES}}
 - orchestrator_instruction: {{INSTRUCTION}}
 - mediation style: {{STYLE_GUIDE}}
+- language (both people read these): {{LANGUAGE}}
 
 GENERATE 4-6 OPTIONS covering: expand the pie, trade-off, objective criteria,
 relationship repair, structural change, package. Each option must serve at
 least one stated interest of EACH party. Neutral wording only. Use only
 interests approved for sharing.
 
+WRITING RULES (both people read every option)
+- Write every description in the language given above, even if the approved
+  texts mix languages.
+- Never call anyone "A", "B", "party A" or "Person B": the people never see
+  those labels. Use their role from the approved texts or relationship (e.g.
+  "the father", "the daughter-in-law"), or "one of you" / "both of you".
+
 OUTPUT (JSON)
 {
  "issue_id": "agenda-0",
- "options": [],
+ "options": [{"description": "<one specific option, in the language above>", "type": "<expand|tradeoff|criteria|repair|structural|package>"}],
  "open_questions": []
 }
 """.strip()
@@ -234,6 +243,7 @@ you never rewrite, add or remove a term.
 YOU RECEIVE
 - each party's own approved account: {{APPROVED_SHARES}}
 - agreed terms, exactly as both accepted them: {{AGREED_TERMS}}
+- language for the summary and flags (both people read them): {{LANGUAGE}}
 
 WRITE
 1. summary: one or two neutral sentences on what the disagreement was about,
@@ -268,10 +278,20 @@ serious crime/legal (fraud, title, divorce, custody), power imbalance,
 outgoing pressure/advice/leaks/taking sides.
 
 SEVERITY
-3 CRITICAL → HALT_AND_REFER
-2 HIGH → PAUSE_AND_CHECK
-1 MODERATE → CONTINUE_WITH_CARE
+3 CRITICAL → HALT_AND_REFER   danger to life or safety: threats of harm, violence,
+  self-harm, abuse happening now
+2 HIGH → PAUSE_AND_CHECK      abuse, coercion or intimidation (someone forced or
+  afraid of being harmed, punished or thrown out), a minor, a court or police
+  case already underway
+1 MODERATE → CONTINUE_WITH_CARE  real power imbalance (money, housing or job
+  depends on the other), very high distress
 0 NONE → CONTINUE
+
+NOT SAFETY CONCERNS (severity 0): embarrassment, shame, worry about gossip or
+what family, friends or colleagues will think ("log kya kahenge"), being scared
+the other will tell people, anger, sadness, an ordinary loan or money dispute,
+household chores, in-law friction. These are what mediation is for. "Fear" only
+counts when someone fears harm, punishment or losing their home or safety.
 
 LOCAL RESOURCES: {{LOCAL_RESOURCES}}
 
@@ -496,6 +516,53 @@ LANGUAGES = {
     "hi": "Reply in Hindi, written in Devanagari script.",
 }
 LANGUAGE_NAMES = {"en": "English", "hinglish": "Hinglish (Hindi and English in Latin script)", "hi": "Hindi (Devanagari script)"}
+
+
+_DEVANAGARI = re.compile(r"[\u0900-\u097F]")
+_LATIN_LETTER = re.compile(r"[A-Za-z]")
+# Common Hindi words written in Latin script. A text where enough of the words
+# are these is Hinglish, not English.
+_HINGLISH_WORDS = {
+    "hai", "hain", "nahi", "nahin", "mein", "ki", "ka", "ke", "ko", "aur", "hoon", "hun", "tha", "thi",
+    "kya", "kar", "karna", "karti", "karta", "mujhe", "mera", "meri", "mere", "hum", "aap", "bhi", "se",
+    "toh", "lekin", "yeh", "woh", "kuch", "bahut", "chahti", "chahta", "raha", "rahi", "ghar", "kaam",
+    "liye", "jab", "tab", "sab", "koi", "apne", "apni", "unke", "unki", "humein", "nahin", "baat",
+}
+
+
+def detect_language(text: str) -> str:
+    """Rough guess at how a person writes: "hi" (Devanagari), "hinglish" or "en"."""
+    devanagari = len(_DEVANAGARI.findall(text or ""))
+    latin = len(_LATIN_LETTER.findall(text or ""))
+    if devanagari and devanagari >= latin * 0.25:
+        return "hi"
+    words = re.findall(r"[a-z]+", (text or "").lower())
+    if words and sum(word in _HINGLISH_WORDS for word in words) / len(words) >= 0.12:
+        return "hinglish"
+    return "en"
+
+
+def joint_language(preferences: dict[str, str | None], shares: dict[str, list[str]]) -> str:
+    """The one language for text both people read (joint note, options, agreement).
+
+    Each person's saved preference wins; otherwise it is guessed from their
+    approved words. If they match, use it. Hindi and Hinglish readers can both
+    read Hinglish. Anything involving English falls back to English.
+    """
+    codes = set()
+    for party in ("A", "B"):
+        code = preferences.get(party) or (detect_language(" ".join(shares.get(party) or [])) if shares.get(party) else None)
+        if code:
+            codes.add(code)
+    if len(codes) == 1:
+        return codes.pop()
+    if codes == {"hi", "hinglish"}:
+        return "hinglish"
+    return "en"
+
+
+def joint_language_instruction(code: str) -> str:
+    return f"Write it in {LANGUAGE_NAMES.get(code, 'English')}, so both people can read it."
 
 
 def language_instruction(code: str | None) -> str:

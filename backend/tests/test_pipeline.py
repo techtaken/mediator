@@ -573,3 +573,156 @@ def test_pending_audit_tracks_every_entry_since_last_persist():
     append_audit(state, {"agent": "DIAGNOSTICIAN"})
     append_audit(state, {"agent": "CAUCUS_A"})
     assert [entry["agent"] for entry in pending_audit(state)] == ["DIAGNOSTICIAN", "CAUCUS_A"]
+
+
+# --- Language for text both people read ----------------------------------------
+
+from app.agents.prompts import detect_language, joint_language  # noqa: E402
+from app.agents.state import note_clean_turn, record_safety_flag  # noqa: E402
+from app.agents.pipeline import summarize_agreement  # noqa: E402
+
+HINGLISH_SHARE = "Main 10 ghante ki job karti hoon aur weekend par poora khana banati hoon. Meri mehnat kisi ko dikhti nahi hai."
+HINDI_SHARE = "मुझे लगता है कि मेरी मेहनत किसी को दिखती नहीं है।"
+ENGLISH_SHARE = "I work long hours and cook every weekend, and nobody seems to notice."
+
+
+@pytest.mark.parametrize(
+    "text, code",
+    [(HINGLISH_SHARE, "hinglish"), (HINDI_SHARE, "hi"), (ENGLISH_SHARE, "en"), ("", "en")],
+)
+def test_detect_language(text, code):
+    assert detect_language(text) == code
+
+
+@pytest.mark.parametrize(
+    "prefs, shares, code",
+    [
+        ({}, {"A": [HINGLISH_SHARE], "B": [HINGLISH_SHARE]}, "hinglish"),
+        ({}, {"A": [HINDI_SHARE], "B": [HINDI_SHARE]}, "hi"),
+        ({}, {"A": [HINDI_SHARE], "B": [HINGLISH_SHARE]}, "hinglish"),
+        ({}, {"A": [ENGLISH_SHARE], "B": [HINGLISH_SHARE]}, "en"),
+        ({"A": "hi", "B": "hi"}, {"A": [ENGLISH_SHARE], "B": [ENGLISH_SHARE]}, "hi"),
+        ({"A": "hinglish"}, {"A": [ENGLISH_SHARE], "B": [HINGLISH_SHARE]}, "hinglish"),
+    ],
+)
+def test_joint_language(prefs, shares, code):
+    assert joint_language(prefs, shares) == code
+
+
+def test_joint_outputs_are_asked_for_in_the_shared_language():
+    state = new_shared_state("D-1")
+    state["approved_shares"] = {"A": [HINGLISH_SHARE], "B": [HINGLISH_SHARE]}
+    agents = FakeAgents()
+    run_joint_pipeline(state=state, caller=agents)
+    assert state["joint_language"] == "hinglish"
+    for role in ("OPTIONS", "JOINT_VOICE", "DIAGNOSTICIAN"):
+        call = agents.of(role)[0]
+        if "LANGUAGE" in call["mapping"]:
+            assert "Hinglish" in call["mapping"]["LANGUAGE"], role
+    assert "Hinglish" in agents.of("OPTIONS")[0]["prompt"]
+    assert "Hinglish" in agents.of("JOINT_VOICE")[0]["prompt"]
+
+
+def test_saved_preferences_win_over_detection():
+    state = new_shared_state("D-1")
+    state["approved_shares"] = {"A": [ENGLISH_SHARE], "B": [ENGLISH_SHARE]}
+    agents = FakeAgents()
+    run_joint_pipeline(state=state, caller=agents, languages={"A": "hi", "B": "hi"})
+    assert "Hindi" in agents.of("OPTIONS")[0]["prompt"]
+
+
+def test_agreement_summary_uses_the_joint_language():
+    state = new_shared_state("D-1")
+    state["approved_shares"] = {"A": [HINDI_SHARE], "B": [HINDI_SHARE]}
+    state["joint_language"] = "hi"
+    agents = FakeAgents(DRAFTER={"summary": "सारांश", "flags": []})
+    summarize_agreement(state=state, terms=["हर रविवार बात करेंगे"], caller=agents)
+    assert "Hindi" in agents.of("DRAFTER")[0]["prompt"]
+
+
+# --- Moderate holds lift after clean turns ----------------------------------------
+
+
+def _held(severity=2):
+    state = new_shared_state("D-1")
+    record_safety_flag(state, "B", {"severity": severity, "action": "PAUSE_AND_CHECK" if severity == 2 else "HALT_AND_REFER"})
+    return state
+
+
+def test_hold_lifts_after_two_clean_turns():
+    state = _held()
+    assert joint_blocked_by(state) == ["B"]
+    assert note_clean_turn(state, "B") is False
+    assert joint_blocked_by(state) == ["B"]
+    assert note_clean_turn(state, "B") is True
+    assert joint_blocked_by(state) == []
+
+
+def test_a_new_concern_restarts_the_count():
+    state = _held()
+    note_clean_turn(state, "B")
+    record_safety_flag(state, "B", {"severity": 1, "action": "CONTINUE_WITH_CARE"})
+    assert note_clean_turn(state, "B") is False
+    assert joint_blocked_by(state) == ["B"]
+
+
+def test_halts_never_lift():
+    state = _held(severity=3)
+    for _ in range(5):
+        assert note_clean_turn(state, "B") is False
+    assert joint_blocked_by(state) == ["B"]
+
+
+def test_held_party_is_released_through_real_turns():
+    state = _held()
+    for _ in range(2):
+        _turn(FakeAgents(), party="B", message="Theek hai, main baat karne ko taiyaar hoon.", state=state)
+    assert joint_blocked_by(state) == []
+    assert any(entry.get("reason") == "hold lifted after clean turns" for entry in state["audit_log"])
+
+
+def test_unchecked_turns_never_lift_a_hold():
+    state = _held()
+    for _ in range(3):
+        _turn(FakeAgents(SAFETY_GUARDIAN=RuntimeError("down")), party="B", message="ok", state=state)
+    assert joint_blocked_by(state) == ["B"]
+
+
+def test_safety_rules_separate_embarrassment_from_danger():
+    from app.agents.constitution import CONSTITUTION
+    from app.agents.prompts import ROLE_PROMPTS
+
+    assert "fear for someone's safety" in CONSTITUTION
+    assert "log kya kahenge" in CONSTITUTION
+    safety = " ".join(ROLE_PROMPTS["SAFETY_GUARDIAN"].split())
+    assert "NOT SAFETY CONCERNS" in safety
+    assert "scared the other will tell people" in safety
+
+
+def test_english_options_for_hinglish_readers_are_rewritten_once():
+    state = new_shared_state("D-1")
+    state["approved_shares"] = {"A": [HINGLISH_SHARE], "B": [HINGLISH_SHARE]}
+    replies = iter([
+        {"options": [{"description": "Share the cooking on weekends and agree a weekday chore list."}]},
+        {"options": [{"description": "Weekend par khana dono milkar banayein aur hafte ke kaam ki list banayein."}]},
+    ])
+    agents = FakeAgents(OPTIONS=lambda _m: next(replies))
+    built = run_joint_pipeline(state=state, caller=agents)
+    assert len(agents.of("OPTIONS")) == 2
+    assert "REWRITE" in agents.of("OPTIONS")[1]["mapping"]["INSTRUCTION"]
+    assert built["compromises"] == ["Weekend par khana dono milkar banayein aur hafte ke kaam ki list banayein."]
+
+
+def test_options_already_in_the_right_language_are_not_rewritten():
+    state = new_shared_state("D-1")
+    state["approved_shares"] = {"A": [ENGLISH_SHARE], "B": [ENGLISH_SHARE]}
+    agents = FakeAgents()
+    run_joint_pipeline(state=state, caller=agents)
+    assert len(agents.of("OPTIONS")) == 1
+
+
+def test_options_prompt_bans_internal_labels():
+    from app.agents.prompts import ROLE_PROMPTS
+
+    text = " ".join(ROLE_PROMPTS["OPTIONS"].split())
+    assert 'Never call anyone "A", "B"' in text

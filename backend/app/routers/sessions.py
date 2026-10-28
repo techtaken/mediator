@@ -334,7 +334,10 @@ def _build_joint(session: dict) -> bool:
     supabase = get_supabase()
     try:
         with track_calls(sid):
-            built = run_joint_pipeline(state=load_state(session))
+            built = run_joint_pipeline(
+                state=load_state(session),
+                languages={"A": session.get("language_a"), "B": session.get("language_b")},
+            )
         try:
             save_state(sid, built["state"], state_version(session))
         except StateConflict:

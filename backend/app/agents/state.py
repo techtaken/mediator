@@ -187,10 +187,42 @@ def record_safety_flag(state: dict[str, Any], party: PartyKey, report: dict[str,
             "action": report.get("action"),
             "categories": report.get("categories") or [],
         }
+    if severity:
+        # Any new concern restarts the count of clean turns needed to lift a hold.
+        safety.setdefault("clean_turns", {})[party] = 0
     if severity >= 2 or report.get("action") == "PAUSE_AND_CHECK":
         blocked = safety.setdefault("joint_blocked_by", [])
         if party not in blocked:
             blocked.append(party)
+
+
+CLEAN_TURNS_TO_LIFT_HOLD = 2
+
+
+def note_clean_turn(state: dict[str, Any], party: PartyKey) -> bool:
+    """Record a turn the safety check actually ran on and found nothing.
+
+    A moderate hold (severity 2) is lifted after CLEAN_TURNS_TO_LIFT_HOLD such
+    turns in a row: while held, the caucus checks in gently, so a real concern
+    keeps showing up and keeps the hold. Halts (severity 3) never lift.
+    Returns True when this turn lifted the hold.
+    """
+    safety = state.setdefault("safety", {"flags": {}, "joint_blocked_by": []})
+    blocked = safety.setdefault("joint_blocked_by", [])
+    if party not in blocked:
+        return False
+    if int(((safety.get("flags") or {}).get(party) or {}).get("severity") or 0) >= 3:
+        return False
+    clean = safety.setdefault("clean_turns", {})
+    clean[party] = int(clean.get(party) or 0) + 1
+    if clean[party] < CLEAN_TURNS_TO_LIFT_HOLD:
+        return False
+    blocked.remove(party)
+    clean[party] = 0
+    flag = (safety.get("flags") or {}).get(party)
+    if flag:
+        flag["lifted"] = True
+    return True
 
 
 def joint_blocked_by(state: dict[str, Any]) -> list[PartyKey]:

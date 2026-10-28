@@ -5,7 +5,16 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from app.agents.llm import AgentCaller, call_agent, dumps
-from app.agents.prompts import LANGUAGE_NAMES, STYLES, data_block, language_instruction, style_guide
+from app.agents.prompts import (
+    LANGUAGE_NAMES,
+    STYLES,
+    data_block,
+    detect_language,
+    joint_language,
+    joint_language_instruction,
+    language_instruction,
+    style_guide,
+)
 from app.agents.schemas import REALITY_TYPES
 from app.agents.state import (
     PartyKey,
@@ -13,6 +22,7 @@ from app.agents.state import (
     apply_caucus_updates,
     normalize_private,
     party_view,
+    note_clean_turn,
     record_safety_flag,
     shared_view,
 )
@@ -156,6 +166,8 @@ def handle_party_turn(
     severity = _severity(safety)
     if severity:
         record_safety_flag(state, party, {**safety, "severity": severity})
+    elif note_clean_turn(state, party):
+        append_audit(state, {"stage": state.get("stage"), "agent": "SAFETY_GUARDIAN", "reason": "hold lifted after clean turns"})
 
     plan = _plan_turn(state, party, message, safety, caller)
     next_agent = plan["next_agent"]
@@ -321,6 +333,13 @@ def _handoff(state: dict[str, Any], party: PartyKey, plan: dict[str, Any], calle
     )
 
 
+def _joint_language_for(state: dict[str, Any]) -> str:
+    """Instruction for text both people read. Set when the joint view is built;
+    rooms built before that get it guessed from their approved words."""
+    code = state.get("joint_language") or joint_language({}, state.get("approved_shares") or {})
+    return joint_language_instruction(code)
+
+
 def _run_internal(
     agent: str,
     state: dict[str, Any],
@@ -339,6 +358,7 @@ def _run_internal(
         "AGREED_TERMS": dumps(view.get("agreed_terms") or []),
         "FOCUS": str(plan.get("focus") or ""),
         "STYLE_GUIDE": style_guide(state.get("style")),
+        "LANGUAGE": _joint_language_for(state),
     }
     try:
         result = caller(agent, mapping)
@@ -377,6 +397,7 @@ def _common_ground(state: dict[str, Any], caller: AgentCaller) -> str | None:
         "INSTRUCTION": "Name what both approved texts have in common.",
         "APPROVED_SHARES": dumps(view.get("approved_shares") or {}),
         "STYLE_GUIDE": style_guide(state.get("style")),
+        "LANGUAGE": _joint_language_for(state),
     }
     try:
         result = caller("JOINT_VOICE", mapping)
@@ -600,6 +621,7 @@ def summarize_agreement(
             {
                 "APPROVED_SHARES": dumps(view.get("approved_shares") or {}),
                 "AGREED_TERMS": dumps([{"id": index + 1, "text": text} for index, text in enumerate(terms)]),
+                "LANGUAGE": _joint_language_for(state),
             },
         )
     except Exception:
@@ -615,10 +637,20 @@ def summarize_agreement(
     return {"summary": summary, "flags": flags}
 
 
+def _options_in_wrong_language(state: dict[str, Any]) -> bool:
+    target = state.get("joint_language")
+    texts = _option_texts(state.get("options") or {})
+    if target not in ("hi", "hinglish") or not texts:
+        return False
+    english = sum(detect_language(text) == "en" for text in texts)
+    return english * 2 > len(texts)
+
+
 def run_joint_pipeline(
     *,
     state: dict[str, Any],
     caller: AgentCaller = call_agent,
+    languages: dict[str, str | None] | None = None,
 ) -> dict[str, Any]:
     """When both parties have approved what to share, build the joint view.
 
@@ -627,6 +659,9 @@ def run_joint_pipeline(
     a "where you overlap" note and options drawn only from those two texts.
     """
     shares = state.get("approved_shares") or {}
+    # Options, the overlap note and the agreement summary are read by both, so
+    # they share one language (see joint_language).
+    state["joint_language"] = joint_language(languages or {}, shares)
     plan = {
         "stage": "DIAGNOSIS",
         "focus": None,
@@ -640,6 +675,14 @@ def run_joint_pipeline(
         "Each must be specific to this dispute; no generic advice."
     )
     _run_internal("OPTIONS", state, plan, "A", caller)
+    if _options_in_wrong_language(state):
+        # Models often fall back to English. One rewrite, only when both people
+        # read Hindi or Hinglish and most options came back in English.
+        plan["instructions_to_agent"] += (
+            f" REWRITE: the previous options were in English. Write every option in "
+            f"{LANGUAGE_NAMES.get(state['joint_language'], 'English')}."
+        )
+        _run_internal("OPTIONS", state, plan, "A", caller)
     common_ground = _common_ground(state, caller)
 
     compromises = _option_texts(state.get("options") or {})[:5]
