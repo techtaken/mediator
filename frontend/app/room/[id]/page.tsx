@@ -2,11 +2,12 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { FormEvent, use, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { FormEvent, use, useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Chat } from "@/components/room/Chat";
 import { ConsentCard } from "@/components/room/ConsentCard";
 import { HaltPanel } from "@/components/room/HaltPanel";
 import { JointView } from "@/components/room/JointView";
+import { ChoosePin, EnterPin } from "@/components/room/PinScreens";
 import { RoomMenu, type RoomAction } from "@/components/room/RoomMenu";
 import { ShareReview } from "@/components/room/ShareReview";
 import { Steps } from "@/components/room/Steps";
@@ -15,6 +16,8 @@ import {
   ApiError,
   acceptConsent,
   askForPerson,
+  claimRoom,
+  clearRoomAccess,
   deleteMyData,
   deleteRoom,
   fetchFollowUp,
@@ -23,11 +26,14 @@ import {
   fetchSession,
   fetchSummary,
   getInviteToken,
+  getRoomAccess,
   leaveSession,
   retryJoint,
   rotateInvite,
+  saveRoomAccess,
   sendMessage,
   setLanguage,
+  unlockRoom,
   withdrawShare,
   type AuthOpts,
 } from "@/lib/api";
@@ -53,6 +59,9 @@ function whatsappHref(link: string) {
 
 async function loadRoom(id: string, auth: AuthOpts) {
   const session = await fetchSession(id, auth);
+  if (session.needs_pin) {
+    return { session, messages: [], summary: null, joint: null, followUp: null };
+  }
   const messages = await fetchMessages(id, auth);
   let summary: JointSummary | null = null;
   let joint: JointState | null = null;
@@ -85,7 +94,8 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
   // Invite tokens live in sessionStorage, so read them only on the client.
   const onClient = useSyncExternalStore(noopSubscribe, () => true, () => false);
   const inviteToken = onClient ? getInviteToken(id) : null;
-  const auth = useMemo<AuthOpts>(() => ({ accessToken, inviteToken }), [accessToken, inviteToken]);
+  const roomAccess = onClient ? getRoomAccess(id) : null;
+  const auth = useMemo<AuthOpts>(() => ({ accessToken, inviteToken, roomAccess }), [accessToken, inviteToken, roomAccess]);
 
   const [session, setSession] = useState<Session | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -101,11 +111,33 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
-  // The room was deleted (404) or the invite expired (410): stop polling.
-  const [gone, setGone] = useState<"deleted" | "expired" | null>(null);
+  // The room was deleted (404), the invite expired (410) or it was replaced (403): stop polling.
+  const [gone, setGone] = useState<"deleted" | "expired" | "replaced" | null>(null);
   const [confirmRotate, setConfirmRotate] = useState(false);
+  // The server wants the invited person's PIN (423): show nothing of the room until then.
+  const [pinGate, setPinGate] = useState(false);
+  const [termsAccepted, setTermsAccepted] = useState(false);
+  const [claiming, setClaiming] = useState(false);
 
-  const canLoad = onClient && !authLoading && Boolean(auth.accessToken || auth.inviteToken) && !gone;
+  /** The access token ran out or was never there: clear the room off the screen and ask. */
+  const askedForPin = useCallback(
+    (err: unknown) => {
+      if (!(err instanceof ApiError && err.status === 423)) return false;
+      clearRoomAccess(id);
+      setSession(null);
+      setMessages([]);
+      setSummary(null);
+      setJoint(null);
+      setFollowUp(null);
+      setError("");
+      setPinGate(true);
+      return true;
+    },
+    [id],
+  );
+
+  const canLoad =
+    onClient && !authLoading && Boolean(auth.accessToken || auth.inviteToken || auth.roomAccess) && !gone && !pinGate && !claiming;
 
   useEffect(() => {
     if (!canLoad) return;
@@ -126,8 +158,13 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
         })
         .catch((err: unknown) => {
           if (cancelled) return;
+          if (askedForPin(err)) return;
           if (err instanceof ApiError && (err.status === 404 || err.status === 410)) {
             setGone(err.status === 404 ? "deleted" : "expired");
+          }
+          if (err instanceof ApiError && err.status === 403 && (auth.inviteToken || auth.roomAccess)) {
+            clearRoomAccess(id);
+            setGone("replaced");
           }
           setError(err instanceof Error ? err.message : "Could not load room");
         });
@@ -153,7 +190,27 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
       clearInterval(timer);
       stop();
     };
-  }, [canLoad, id, auth, refreshKey]);
+  }, [canLoad, id, auth, refreshKey, askedForPin]);
+
+  async function choosePin(pin: string) {
+    // The link stops working the moment the PIN is saved. A refresh sent with
+    // just the link would then ask for the PIN they only just chose, so hold
+    // refreshes until the access token is here.
+    setClaiming(true);
+    try {
+      saveRoomAccess(id, await claimRoom(id, pin, auth));
+      setTermsAccepted(false);
+    } catch (err) {
+      if (!askedForPin(err)) throw err;
+    } finally {
+      setClaiming(false);
+    }
+  }
+
+  async function enterPin(pin: string) {
+    saveRoomAccess(id, await unlockRoom(id, pin, auth));
+    setPinGate(false);
+  }
 
   async function run(action: () => Promise<Session | void>) {
     setBusy(true);
@@ -163,6 +220,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
       if (next) setSession(next);
       setRefreshKey((n) => n + 1);
     } catch (err) {
+      if (askedForPin(err)) return;
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
       setBusy(false);
@@ -186,6 +244,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
       setRefreshKey((n) => n + 1);
     } catch (err) {
       setDraft(text);
+      if (askedForPin(err)) return;
       setError(err instanceof Error ? err.message : "Could not send");
     } finally {
       setPending(null);
@@ -208,6 +267,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     await run(() => {
       if (action === "leave") return leaveSession(id, auth);
       if (action === "human") return askForPerson(id, auth);
+      if (action === "reset_invite") return rotateInvite(id, auth);
       return deleteMyData(id, auth);
     });
   }
@@ -230,12 +290,18 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     return (
       <main className="mx-auto max-w-lg px-5 py-16">
         <h1 className="font-[family-name:var(--font-display)] text-3xl text-ink">
-          {gone === "deleted" ? "This room is no longer available" : "This invite link has expired"}
+          {gone === "deleted"
+            ? "This room is no longer available"
+            : gone === "replaced"
+              ? "This link no longer works"
+              : "This invite link has expired"}
         </h1>
         <p className="mt-3 text-[15px] leading-relaxed text-muted">
           {gone === "deleted"
             ? "It was deleted, or removed after the retention period. Nothing from it is kept."
-            : "Ask the person who invited you to send a new link."}
+            : gone === "replaced"
+              ? "The person who invited you replaced it. Anything written with the old link was deleted, and they never saw it. Ask them for the new link."
+              : "Ask the person who invited you to send a new link."}
         </p>
         <Link href="/" className="mt-6 inline-block text-sm text-terracotta underline-offset-4 hover:underline">
           Back to Mediator
@@ -244,7 +310,15 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     );
   }
 
-  if (!auth.accessToken && !auth.inviteToken) {
+  if (pinGate) {
+    return (
+      <main className="mx-auto max-w-lg">
+        <EnterPin onEnter={enterPin} />
+      </main>
+    );
+  }
+
+  if (!auth.accessToken && !auth.inviteToken && !auth.roomAccess) {
     return (
       <main className="mx-auto max-w-lg px-5 py-16">
         <p className="text-ink">This private room needs a sign-in or an invite link.</p>
@@ -258,8 +332,9 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
   const isA = session?.party === "user_a";
   const otherReady = isA ? session?.user_b_ready : session?.user_a_ready;
   const hasSpoken = messages.some((m) => m.sender_role === session?.party);
-  const needsConsent = session?.status === "intake" && !session.i_consented;
-  const showChat = session?.status === "intake" && !session.my_share && !needsConsent;
+  const needsPin = Boolean(session?.needs_pin);
+  const needsConsent = !needsPin && session?.status === "intake" && !session.i_consented;
+  const showChat = session?.status === "intake" && !session.my_share && !needsConsent && !needsPin;
   const canStop = session ? ["intake", "building_joint", "joint_review"].includes(session.status) : false;
   // The server saves the person's message before the mediator replies, so a
   // poll during that wait can already return it. Only show the local
@@ -286,6 +361,18 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     body = <p className="flex-1 px-4 py-8 text-muted">{error || "Opening your room…"}</p>;
   } else if (session.status === "halted") {
     body = <HaltPanel session={session} />;
+  } else if (needsPin && (session.i_consented || termsAccepted)) {
+    body = <ChoosePin onChoose={choosePin} />;
+  } else if (needsPin) {
+    // Accepting is recorded together with the PIN, so nobody joins without one.
+    body = (
+      <ConsentCard
+        retentionDays={session.retention_days}
+        language={session.my_language}
+        onLanguage={(language) => run(() => setLanguage(id, language, auth))}
+        onAccept={async () => setTermsAccepted(true)}
+      />
+    );
   } else if (needsConsent) {
     body = (
       <ConsentCard
@@ -336,10 +423,11 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
           </Link>
           <div className="flex items-center gap-2">
             <p className="text-xs text-muted">{isA ? "Your private room" : "Invited · private room"}</p>
-            {session ? (
+            {session && !needsPin ? (
               <RoomMenu
                 canStop={canStop}
                 isA={isA}
+                canResetInvite={isA && session.other_joined && session.status === "intake" && !session.user_b_ready}
                 language={session.my_language}
                 onLanguage={(language) => run(() => setLanguage(id, language, auth))}
                 onAction={onMenu}

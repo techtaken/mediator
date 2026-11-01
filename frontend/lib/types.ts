@@ -19,6 +19,7 @@ export type Session = {
   i_consented: boolean;
   invite_expires_at: string | null;
   other_joined: boolean;
+  needs_pin: boolean;
   retention_days: number;
   my_data_deleted: boolean;
   my_language: Language | null;

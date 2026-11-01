@@ -28,8 +28,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin")
 
 SESSION_STATUSES = {"intake", "building_joint", "joint_review", "resolved", "halted"}
-# Never shown to admins: the invite secret would let them act as Person B.
-HIDDEN_SESSION_FIELDS = {"invite_token_b", "mediation_state"}
+# Never shown to admins: the invite secret and PIN hash protect Person B's room.
+HIDDEN_SESSION_FIELDS = {"invite_token_b", "b_pin_hash", "mediation_state"}
 
 
 def _session_summary(row: dict[str, Any]) -> dict[str, Any]:

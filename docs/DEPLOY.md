@@ -5,7 +5,7 @@ that need your accounts.
 
 | Part | Where | Config |
 |---|---|---|
-| Database + auth | Supabase | `supabase/migrations/001…009` |
+| Database + auth | Supabase | `supabase/migrations/001…010` |
 | API (FastAPI) | Render (Docker) | `render.yaml`, `backend/Dockerfile` |
 | Scheduled jobs | Render cron (or any scheduler) | `render.yaml` |
 | Web app (Next.js) | Vercel | notes below |
@@ -86,6 +86,9 @@ To run the live evals in CI, add a `GEMINI_API_KEY` repository secret and start 
 | `RATE_LIMIT_MESSAGES_PER_MINUTE` | no | 12 | Per person per room |
 | `RATE_LIMIT_WRITES_PER_MINUTE` | no | 30 | Per person per room |
 | `INVITE_TTL_DAYS` | no | 14 | Unused invite links expire |
+| `PIN_ACCESS_TTL_MINUTES` | no | 120 | How long a correct PIN opens the invited person's room |
+| `PIN_MAX_ATTEMPTS` | no | 5 | Wrong PINs before entry locks |
+| `PIN_LOCK_MINUTES` | no | 15 | How long entry stays locked |
 | `RETENTION_DAYS` | no | 180 | Rooms older than this are removed (0 = never) |
 | `AUDIT_REASON_RETENTION_DAYS` | no | 30 | Free-text audit reasoning cleared after this |
 | `JOB_TOKEN` | yes for cron | empty | Secret for `/api/jobs/*` |

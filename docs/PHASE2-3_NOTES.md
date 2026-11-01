@@ -28,7 +28,7 @@ Branch: `phase2-3-quality-and-growth` (cut from `phase0-agent-hardening`).
 ### 4. Abuse protection
 
 - `app/ratelimit.py`: in-process sliding windows. Room creation per user per hour, messages per person per room per minute, and other writes (share drafts and approvals, ideas, answers, agreement draft and sign, invite rotation) per minute. 429 with `Retry-After` and a friendly message. **Per process**: with several backend instances, move the counters to a shared store.
-- Invite links: `invite_expires_at` is set to `INVITE_TTL_DAYS` (14) at creation. An expired link is refused with 410 **only while unused**: once Person B has accepted the consent card, the link is their key to their own room and keeps working. Person A can replace the link from the room ("Sent it to the wrong person? Make a new link") until B joins; the old one stops working at once.
+- Invite links: `invite_expires_at` is set to `INVITE_TTL_DAYS` (14) at creation. An expired link is refused with 410 **only while unused**. Person A can replace the link from the room ("Sent it to the wrong person? Make a new link"); the old one stops working at once. The link is no longer the key to B's room: see "Follow-up: link + PIN" below.
 - New privacy fix found on the way: Person A used to keep seeing B's invite link, which is also B's key, so A could open B's private room. The link is now hidden from A once B has joined. **Remaining gap:** A could have copied the link earlier. A proper fix is a one-time claim that issues B a separate device token. It is not done, because B often opens the link in several browsers (WhatsApp in-app, then Chrome).
 
 ### 5. Retention and deletion
@@ -143,3 +143,20 @@ The first full live run (`gemini-3.5-flash-lite`) passed 11/12 scenarios with 10
 - **Joint text in English for Hinglish speakers (in-laws).** The overlap note, options and agreement summary now get one shared language: each person's saved preference, else detected from their approved text (Devanagari / Hinglish / English). Same language → that; Hindi + Hinglish → Hinglish; anything with English → English. If both read Hindi or Hinglish and most options come back in English, Options is asked once to rewrite. Options are also told never to use the internal "A"/"B" labels.
 
 Still open: options occasionally still name someone "B" (1 of 5 in the last run); share drafts are not always within ±15% of each other's length.
+
+## Follow-up: link + PIN for the invited person
+
+The invite link used to be the only key to Person B's room, with no expiry once used. Person A has that link (they sent it), so A could open it in a private window and read B's private chat; so could anyone B forwarded it to. Now the link alone opens nothing once B has joined.
+
+- **Joining.** Link only: B can see the topic and the consent card, set a language, and claim the room. `POST /sessions/{id}/claim` records consent and the PIN together, and only the first claim wins (`b_pin_hash IS NULL` in the update).
+- **Coming back.** `POST /sessions/{id}/unlock` (link + PIN) returns an access token, sent as `X-Room-Access`. It lasts `PIN_ACCESS_TTL_MINUTES`, is kept in `sessionStorage` (this tab only), and only its hash is stored. Link alone gets 423 from every route, with nothing about the room.
+- **Deny by default.** `get_actor` needs A's sign-in or an access token. Only `GET /sessions/{id}`, `POST /language` and `POST /claim` use `get_entry_actor`, which also accepts an unclaimed link.
+- **The PIN.** Six digits, hashed with scrypt, never returned or shown to admins. Patterns and date shapes (DDMMYY, MMDDYY, YYMMDD) are refused, because family know the birthdays. Each try is counted before checking, one request at a time, so parallel guesses can't beat the limit: `PIN_MAX_ATTEMPTS` wrong tries lock entry for `PIN_LOCK_MINUTES`.
+- **Reset.** `POST /invite/rotate` now also works after B has joined, until B has shared. B's chat, notes and drafts are deleted, tokens revoked, PIN and consent cleared, and a new link issued, so A gets an empty side and never sees what was written. Safety flags stay. A model call still running for the old B is dropped rather than saved. Once B has shared there's no reset: A can delete the room and start again.
+
+Known limits:
+
+- Someone holding the link can lock PIN entry on purpose by guessing wrong. An existing access token keeps working, but B can't get a new one until the lock ends.
+- Forgetting the PIN after sharing means the room can't be reopened by B, and nobody can recover it.
+- A PIN doesn't stop someone watching B type it, or pressuring B to hand it over.
+- A room B joined before this change has no PIN, so whoever next opens its link can set one. This matters only for rooms that existed before migration 010; nothing is deployed yet.

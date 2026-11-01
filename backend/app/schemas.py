@@ -45,6 +45,7 @@ class SessionOut(BaseModel):
     # Person A only, while the other person hasn't joined yet.
     invite_expires_at: str | None = None
     other_joined: bool = True
+    needs_pin: bool = False
     # Rooms are removed this many days after they open (0: kept until deleted).
     retention_days: int = 0
     my_data_deleted: bool = False
@@ -54,6 +55,15 @@ class SessionOut(BaseModel):
 
 class DeletedOut(BaseModel):
     deleted: bool
+
+
+class PinBody(BaseModel):
+    pin: str = Field(pattern=r"^[0-9]{6}$")
+
+
+class RoomAccessOut(BaseModel):
+    access_token: str
+    expires_at: str
 
 
 class RoomSummaryOut(BaseModel):

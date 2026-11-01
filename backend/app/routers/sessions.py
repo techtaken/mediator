@@ -14,6 +14,7 @@ from starlette.concurrency import run_in_threadpool
 from app.agents.pipeline import check_share, draft_share, handle_party_turn, run_joint_pipeline, share_severity
 from app.agents.state import (
     append_audit,
+    empty_party,
     joint_blocked_by,
     new_shared_state,
     party_code,
@@ -30,7 +31,16 @@ from app.agents.store import (
     state_version,
 )
 from app.agents.telemetry import track_calls
-from app.auth import Actor, load_session, require_logged_in, resolve_actor
+from app.auth import (
+    PIN_REQUIRED_DETAIL,
+    Actor,
+    invite_matches,
+    load_session,
+    parse_time,
+    require_logged_in,
+    resolve_actor,
+)
+from app.pin import WEAK_PIN_DETAIL, hash_access_token, hash_pin, new_access_token, verify_pin, weak_pin
 from app.ratelimit import limit_messages, limit_session_creation, limit_writes
 from app.retention import delete_party_data, delete_room
 from app.joint_store import now_iso, seed_ideas
@@ -44,7 +54,9 @@ from app.schemas import (
     LanguageBody,
     JointSummaryOut,
     MessageOut,
+    PinBody,
     ReadyBody,
+    RoomAccessOut,
     RoomSummaryOut,
     SendMessageBody,
     SessionOut,
@@ -56,6 +68,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
 
 HALTED_DETAIL = "This room has been paused."
+INVITE_RESET_DETAIL = "This link no longer works. Ask the person who invited you for a new one."
 NOT_YET_READY_DETAIL = "Let's keep talking privately a little longer before the joint session."
 APPROVE_FIRST_DETAIL = "Review and approve what you'd like to share first."
 ALREADY_SHARED_DETAIL = "You've already shared. Withdraw it first to make changes."
@@ -137,8 +150,20 @@ def get_actor(
     session_id: str,
     authorization: Annotated[str | None, Header()] = None,
     x_invite_token: Annotated[str | None, Header()] = None,
+    x_room_access: Annotated[str | None, Header()] = None,
 ) -> tuple[dict, Actor]:
-    return resolve_actor(session_id, authorization, x_invite_token)
+    return resolve_actor(session_id, authorization, x_invite_token, x_room_access)
+
+
+def get_entry_actor(
+    session_id: str,
+    authorization: Annotated[str | None, Header()] = None,
+    x_invite_token: Annotated[str | None, Header()] = None,
+    x_room_access: Annotated[str | None, Header()] = None,
+) -> tuple[dict, Actor]:
+    """Also lets in someone holding an unused invite link who hasn't chosen a
+    PIN yet. Only for what they need to decide whether to join."""
+    return resolve_actor(session_id, authorization, x_invite_token, x_room_access, allow_limited=True)
 
 
 def _invite_link(session_id: str, token: str) -> str:
@@ -149,6 +174,8 @@ def _invite_link(session_id: str, token: str) -> str:
 def _halt_view(session: dict, actor: Actor) -> str | None:
     if session["status"] != "halted":
         return None
+    if actor.limited:
+        return "other"
     halted_for = session.get("halted_for")
     # Rooms halted before halted_for existed: show support, the safer default.
     if halted_for is None or halted_for == actor.party:
@@ -182,10 +209,11 @@ def _session_out(session: dict, actor: Actor) -> SessionOut:
         halt_view=halt_view,
         halt_message=PAUSED_FOR_OTHER_MESSAGE if halt_view == "other" else None,
         helplines=HELPLINES if halt_view == "self" else [],
-        my_share=_get_share(session["id"], actor.party).get("approved_text"),
+        my_share=None if actor.limited else _get_share(session["id"], actor.party).get("approved_text"),
         i_consented=bool(session.get(_consent_field(actor.party))),
         invite_expires_at=session.get("invite_expires_at") if invite else None,
         other_joined=_other_joined(session) if actor.party == "user_a" else True,
+        needs_pin=actor.limited,
         retention_days=get_settings().retention_days,
         my_data_deleted=bool(session.get(_deleted_field(actor.party))),
         my_language=session.get(language_field(actor.party)),
@@ -416,7 +444,7 @@ def create_session(body: CreateSessionBody, user_id: str = Depends(require_logge
 
 
 @router.get("/sessions/{session_id}", response_model=SessionOut)
-def get_session(ctx: tuple[dict, Actor] = Depends(get_actor)):
+def get_session(ctx: tuple[dict, Actor] = Depends(get_entry_actor)):
     session, actor = ctx
     if actor.party == "user_b" and session["status"] == "intake" and not session.get(_deleted_field("user_b")):
         existing = (
@@ -453,6 +481,16 @@ def list_messages(ctx: tuple[dict, Actor] = Depends(get_actor)):
     return [MessageOut(**row) for row in result.data or []]
 
 
+def _require_same_invited_person(session: dict, actor: Actor) -> None:
+    """The invite can be reset during a slow model call. What that call produced
+    belongs to the person who was here, so it mustn't be saved where the next
+    person through the new link could read it."""
+    if actor.party != "user_b":
+        return
+    if load_session(session["id"]).get("invite_token_b") != session.get("invite_token_b"):
+        raise HTTPException(status_code=409, detail=INVITE_RESET_DETAIL)
+
+
 def _require_intake(session: dict) -> None:
     if session["status"] == "halted":
         raise HTTPException(status_code=409, detail=HALTED_DETAIL)
@@ -477,6 +515,7 @@ def send_message(body: SendMessageBody, ctx: tuple[dict, Actor] = Depends(get_ac
         return [MessageOut(**user_row), MessageOut(**ai_row)]
 
     user_row = _insert_message(session["id"], actor.party, actor.party, text)
+    started = session
     turn = None
     for attempt in range(2):
         try:
@@ -490,6 +529,7 @@ def send_message(body: SendMessageBody, ctx: tuple[dict, Actor] = Depends(get_ac
                     topic=session.get("topic"),
                     language=session.get(language_field(actor.party)),
                 )
+            _require_same_invited_person(started, actor)
             persist_turn(session["id"], actor.party, turn.state, turn.private, state_version(session))
             break
         except StateConflict:
@@ -557,6 +597,7 @@ def draft_my_share(ctx: tuple[dict, Actor] = Depends(get_actor)):
             state=state,
             language=session.get(language_field(actor.party)),
         )
+    _require_same_invited_person(session, actor)
     try:
         save_state(session["id"], state, state_version(session))
     except (StateConflict, PersistError):
@@ -595,6 +636,7 @@ def approve_my_share(
     except Exception as exc:
         logger.exception("share safety check failed for %s", session["id"])
         raise HTTPException(status_code=503, detail="We couldn't check your text just now. Please try again.") from exc
+    _require_same_invited_person(session, actor)
 
     severity = share_severity(safety)
     if severity >= 3:
@@ -680,6 +722,116 @@ def accept_terms(ctx: tuple[dict, Actor] = Depends(get_actor)):
     return _session_out(load_session(session["id"]), actor)
 
 
+def _issue_room_access(session_id: str) -> RoomAccessOut:
+    token = new_access_token()
+    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=get_settings().pin_access_ttl_minutes)).isoformat()
+    supabase = get_supabase()
+    supabase.table("room_access_tokens").delete().eq("session_id", session_id).lt("expires_at", now_iso()).execute()
+    supabase.table("room_access_tokens").insert(
+        {"token_hash": hash_access_token(token), "session_id": session_id, "expires_at": expires_at}
+    ).execute()
+    return RoomAccessOut(access_token=token, expires_at=expires_at)
+
+
+@router.post("/sessions/{session_id}/claim", response_model=RoomAccessOut)
+def claim_room(body: PinBody, ctx: tuple[dict, Actor] = Depends(get_entry_actor)):
+    """The first person through the invite link accepts how Mediator works and
+    chooses a PIN. From then on the link alone opens nothing, so the person who
+    sent it can't read this person's private chat."""
+    session, actor = ctx
+    sid = session["id"]
+    if actor.party != "user_b":
+        raise HTTPException(status_code=403, detail="Only the invited person can choose a PIN.")
+    if not actor.limited:
+        raise HTTPException(status_code=409, detail="You've already chosen a PIN.")
+    if session["status"] == "halted" and not _other_joined(session):
+        raise HTTPException(status_code=409, detail=HALTED_DETAIL)
+    if weak_pin(body.pin):
+        raise HTTPException(status_code=400, detail=WEAK_PIN_DETAIL)
+    limit_writes(sid, actor.party)
+    # Two people can open the link at once; only the first gets the room.
+    claimed = (
+        get_supabase()
+        .table("sessions")
+        .update(
+            {
+                "b_pin_hash": hash_pin(body.pin),
+                "b_pin_set_at": now_iso(),
+                "consented_b_at": session.get("consented_b_at") or now_iso(),
+            }
+        )
+        .eq("id", sid)
+        .eq("invite_token_b", actor.invite_token)
+        .is_("b_pin_hash", "null")
+        .execute()
+    )
+    if not claimed.data:
+        raise HTTPException(status_code=423, detail=PIN_REQUIRED_DETAIL)
+    return _issue_room_access(sid)
+
+
+def _count_pin_attempt(session: dict) -> int:
+    """Count this try before checking the PIN, one request at a time, so guessing
+    in parallel can't get past the limit. Returns the tries left."""
+    settings = get_settings()
+    now = datetime.now(timezone.utc)
+    locked_until = parse_time(session.get("b_pin_locked_until"))
+    if locked_until and locked_until > now:
+        minutes = int((locked_until - now).total_seconds() // 60) + 1
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many wrong tries. Try again in {minutes} minute{'s' if minutes != 1 else ''}.",
+            headers={"Retry-After": str(minutes * 60)},
+        )
+    attempts = int(session.get("b_pin_failed_attempts") or 0)
+    used = attempts + 1
+    lock = used >= settings.pin_max_attempts
+    counted = (
+        get_supabase()
+        .table("sessions")
+        .update(
+            {
+                "b_pin_failed_attempts": 0 if lock else used,
+                "b_pin_locked_until": (now + timedelta(minutes=settings.pin_lock_minutes)).isoformat() if lock else None,
+            }
+        )
+        .eq("id", session["id"])
+        .eq("b_pin_failed_attempts", attempts)
+        .execute()
+    )
+    if not counted.data:
+        raise HTTPException(status_code=409, detail="Please try again.")
+    return max(0, settings.pin_max_attempts - used)
+
+
+@router.post("/sessions/{session_id}/unlock", response_model=RoomAccessOut)
+def unlock_room(
+    session_id: str,
+    body: PinBody,
+    x_invite_token: Annotated[str | None, Header()] = None,
+):
+    """Link + PIN: a short-lived token that opens the invited person's room."""
+    session = load_session(session_id)
+    if not invite_matches(session, x_invite_token):
+        raise HTTPException(status_code=403, detail=INVITE_RESET_DETAIL)
+    stored = session.get("b_pin_hash")
+    if not stored:
+        raise HTTPException(status_code=409, detail="This room doesn't have a PIN yet.")
+    tries_left = _count_pin_attempt(session)
+    if not verify_pin(body.pin, stored):
+        if tries_left == 0:
+            minutes = get_settings().pin_lock_minutes
+            raise HTTPException(status_code=429, detail=f"Too many wrong tries. Try again in {minutes} minutes.")
+        raise HTTPException(
+            status_code=401,
+            detail=f"That PIN isn't right. {tries_left} {'try' if tries_left == 1 else 'tries'} left.",
+        )
+    get_supabase().table("sessions").update({"b_pin_failed_attempts": 0, "b_pin_locked_until": None}).eq(
+        "id", session_id
+    ).execute()
+    return _issue_room_access(session_id)
+
+
 STOPPABLE = ("intake", "building_joint", "joint_review")
 
 
@@ -740,29 +892,51 @@ def get_summary(ctx: tuple[dict, Actor] = Depends(get_actor)):
 def rotate_invite(ctx: tuple[dict, Actor] = Depends(get_actor)):
     """Person A replaces the invite link; the old one stops working at once.
 
-    Only before the other person has joined: after that the link is their key
-    to their own private room, and replacing it would lock them out.
+    If someone already joined with it (the wrong person, or they lost their
+    PIN), everything on their side is deleted, so the new link opens an empty
+    room and Person A never sees what was written. Safety flags stay. Once they
+    have shared their side it can't be reset: A can delete the room instead.
     """
     session, actor = ctx
+    sid = session["id"]
     if actor.party != "user_a":
         raise HTTPException(status_code=403, detail="Only the person who opened the room can change the link.")
-    if _other_joined(session):
-        raise HTTPException(status_code=409, detail="They've already joined, so the link can't be changed.")
     if session["status"] != "intake":
         raise HTTPException(status_code=409, detail="This room is no longer open to new people.")
-    limit_writes(session["id"], actor.party)
-    get_supabase().table("sessions").update(
+    if session.get("user_b_ready") or _get_share(sid, "user_b").get("approved_text"):
+        raise HTTPException(
+            status_code=409,
+            detail="They've already shared their side, so the invite can't be reset. If they can't get back in, you can delete this room and start a new one.",
+        )
+    limit_writes(sid, actor.party)
+
+    def reset(state: dict) -> None:
+        state.setdefault("parties", {})["B"] = empty_party()
+        state.setdefault("signals", {}).setdefault("turns", {})["B"] = 0
+        append_audit(state, {"stage": state.get("stage"), "agent": "INVITE", "type": "invite_rotated"})
+
+    # Saving the state first makes any turn still running for them fail to save.
+    _update_state(session, reset)
+    delete_party_data(sid, "user_b", keep_approved_share=False)
+    supabase = get_supabase()
+    supabase.table("room_access_tokens").delete().eq("session_id", sid).execute()
+    supabase.table("sessions").update(
         {
             "invite_token_b": secrets.token_hex(24),
             "invite_expires_at": _invite_expiry(),
             "invite_rotated_at": now_iso(),
+            "b_pin_hash": None,
+            "b_pin_set_at": None,
+            "b_pin_failed_attempts": 0,
+            "b_pin_locked_until": None,
+            "consented_b_at": None,
+            "language_b": None,
+            "data_deleted_b_at": None,
         }
-    ).eq("id", session["id"]).execute()
-    _update_state(
-        session,
-        lambda state: append_audit(state, {"stage": state.get("stage"), "agent": "INVITE", "type": "invite_rotated"}),
-    )
-    return _session_out(load_session(session["id"]), actor)
+    ).eq("id", sid).execute()
+    # Anything a request already under way wrote after the first delete goes too.
+    delete_party_data(sid, "user_b", keep_approved_share=False)
+    return _session_out(load_session(sid), actor)
 
 
 @router.post("/sessions/{session_id}/delete-my-data", response_model=SessionOut)
@@ -812,7 +986,7 @@ def delete_whole_room(ctx: tuple[dict, Actor] = Depends(get_actor)):
 
 
 @router.post("/sessions/{session_id}/language", response_model=SessionOut)
-def set_language(body: LanguageBody, ctx: tuple[dict, Actor] = Depends(get_actor)):
+def set_language(body: LanguageBody, ctx: tuple[dict, Actor] = Depends(get_entry_actor)):
     """This person's language for the mediator's replies and share draft.
 
     If they haven't written anything yet, their welcome message is replaced

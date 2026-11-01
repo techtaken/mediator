@@ -178,6 +178,7 @@ class FakeSupabase:
             row.setdefault("halted_for", None)
             row.setdefault("halt_kind", None)
             row.setdefault("halted_reason", None)
+            row.setdefault("b_pin_failed_attempts", 0)
         if table == "messages":
             row.setdefault("is_private", True)
         if table == "mediation_audit_events":

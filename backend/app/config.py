@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     rate_limit_writes_per_minute: int = 30
     # An unused invite link stops working after this many days.
     invite_ttl_days: int = 14
+    # The invited person's PIN: how long a correct one opens the room for, and
+    # how many wrong tries lock it for how long.
+    pin_access_ttl_minutes: int = 120
+    pin_max_attempts: int = 5
+    pin_lock_minutes: int = 15
 
     # Data retention. 0 disables the purge.
     retention_days: int = 180

@@ -20,7 +20,7 @@ from app.routers import followups as followups_module
 from app.routers import jobs as jobs_module
 from app.routers import joint as joint_module
 from app.routers import sessions as sessions_module
-from app.routers.sessions import _room_fingerprint, get_actor
+from app.routers.sessions import _room_fingerprint, get_actor, get_entry_actor
 from tests.fakes import FakeSupabase
 from tests.test_pipeline import SAFE, FakeAgents
 
@@ -69,6 +69,7 @@ def as_party():
         return load_session(session_id), actor
 
     app.dependency_overrides[get_actor] = actor_override
+    app.dependency_overrides[get_entry_actor] = actor_override
     yield lambda party: current.update(party=party)
     app.dependency_overrides.clear()
 

@@ -9,6 +9,7 @@ from jwt import InvalidTokenError, PyJWKClient
 
 from app.config import get_settings
 from app.db import get_supabase
+from app.pin import hash_access_token
 
 Party = Literal["user_a", "user_b"]
 
@@ -19,10 +20,13 @@ class Actor:
         party: Party,
         user_id: str | None = None,
         invite_token: str | None = None,
+        limited: bool = False,
     ):
         self.party = party
         self.user_id = user_id
         self.invite_token = invite_token
+        # Holds an unused invite link but hasn't chosen a PIN yet.
+        self.limited = limited
 
 
 @lru_cache
@@ -96,6 +100,9 @@ def resolve_actor(
     session_id: str,
     authorization: Annotated[str | None, Header()] = None,
     x_invite_token: Annotated[str | None, Header()] = None,
+    x_room_access: Annotated[str | None, Header()] = None,
+    *,
+    allow_limited: bool = False,
 ) -> tuple[dict, Actor]:
     session = load_session(session_id)
     user_id = _decode_user(authorization) if authorization else None
@@ -103,15 +110,44 @@ def resolve_actor(
     if user_id and session.get("created_by") == user_id:
         return session, Actor("user_a", user_id=user_id)
 
-    if x_invite_token and secrets.compare_digest(x_invite_token, str(session.get("invite_token_b") or "")):
+    if x_room_access and has_room_access(session_id, x_room_access):
+        return session, Actor("user_b")
+
+    if invite_matches(session, x_invite_token):
+        # Person A has this link too, so once a PIN is set it opens nothing.
+        if session.get("b_pin_hash"):
+            raise HTTPException(status_code=423, detail=PIN_REQUIRED_DETAIL)
         if invite_expired(session):
             raise HTTPException(status_code=410, detail=INVITE_EXPIRED_DETAIL)
-        return session, Actor("user_b", invite_token=x_invite_token)
+        if not allow_limited:
+            raise HTTPException(status_code=403, detail=CHOOSE_PIN_DETAIL)
+        return session, Actor("user_b", invite_token=x_invite_token, limited=True)
 
     raise HTTPException(status_code=403, detail="You cannot access this dispute room")
 
 
 INVITE_EXPIRED_DETAIL = "This invite link has expired. Ask the person who invited you for a new one."
+PIN_REQUIRED_DETAIL = "This invite has already been used. Enter your PIN to open this room."
+CHOOSE_PIN_DETAIL = "Choose a PIN to open this room."
+
+
+def invite_matches(session: dict, token: str | None) -> bool:
+    return bool(token) and secrets.compare_digest(str(token), str(session.get("invite_token_b") or ""))
+
+
+def has_room_access(session_id: str, token: str) -> bool:
+    rows = (
+        get_supabase()
+        .table("room_access_tokens")
+        .select("expires_at")
+        .eq("session_id", session_id)
+        .eq("token_hash", hash_access_token(token))
+        .limit(1)
+        .execute()
+        .data
+    )
+    expires = parse_time(rows[0].get("expires_at")) if rows else None
+    return expires is not None and expires > datetime.now(timezone.utc)
 
 
 def parse_time(value: object) -> datetime | None:

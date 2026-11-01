@@ -26,6 +26,7 @@ export function subscribeRoom(id: string, auth: AuthOpts, handlers: Handlers): (
   const headers: Record<string, string> = { Accept: "text/event-stream" };
   if (auth.accessToken) headers.Authorization = `Bearer ${auth.accessToken}`;
   if (auth.inviteToken) headers["X-Invite-Token"] = auth.inviteToken;
+  if (auth.roomAccess) headers["X-Room-Access"] = auth.roomAccess;
 
   function dispatch(block: string) {
     let event = "message";
@@ -47,6 +48,11 @@ export function subscribeRoom(id: string, auth: AuthOpts, handlers: Handlers): (
       if (res.status === 404) {
         stopped = true;
         handlers.onGone?.();
+        return;
+      }
+      // No access yet, or a PIN is needed: retrying won't help, and the page handles it.
+      if (res.status === 403 || res.status === 423) {
+        stopped = true;
         return;
       }
       if (!res.ok || !res.body) throw new Error(`stream ${res.status}`);

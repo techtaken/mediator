@@ -36,6 +36,7 @@ When a room halts, only the party who triggered it sees why, with helplines. The
    - `007_consent.sql`: each person's "how Mediator works" acceptance, and an index for "Your rooms"
    - `008_phase2_quality.sql`: per-call agent stats, expiring invite links, "delete my data" markers, audit-reason retention
    - `009_phase3_growth.sql`: check-ins after an agreement, the referral inbox, language preference, translations, private "think it through" questions
+   - `010_invite_pin.sql`: the invited person's PIN and the short-lived access tokens it unlocks
 4. Copy keys from **Project Settings → API**:
    - Project URL
    - Publishable key (`sb_publishable_…`) for the browser

@@ -35,7 +35,30 @@ export function getInviteToken(sessionId: string) {
   }
 }
 
-/** An API error that keeps the HTTP status, so pages can react to 404 / 410. */
+const ACCESS_KEY = (sessionId: string) => `mediator_access_${sessionId}`;
+
+export type RoomAccess = { access_token: string; expires_at: string };
+
+// What a correct PIN unlocks. Only for this tab, so a shared phone asks again.
+export function saveRoomAccess(sessionId: string, access: RoomAccess) {
+  sessionStorage.setItem(ACCESS_KEY(sessionId), JSON.stringify(access));
+}
+
+export function clearRoomAccess(sessionId: string) {
+  sessionStorage.removeItem(ACCESS_KEY(sessionId));
+}
+
+export function getRoomAccess(sessionId: string) {
+  if (typeof window === "undefined") return null;
+  try {
+    const access = JSON.parse(sessionStorage.getItem(ACCESS_KEY(sessionId)) ?? "null") as RoomAccess | null;
+    return access && new Date(access.expires_at) > new Date() ? access.access_token : null;
+  } catch {
+    return null;
+  }
+}
+
+/** An API error that keeps the HTTP status, so pages can react to 404 / 410 / 423. */
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -47,7 +70,7 @@ export class ApiError extends Error {
 
 export async function request<T>(
   path: string,
-  init: RequestInit & { accessToken?: string | null; inviteToken?: string | null } = {},
+  init: RequestInit & AuthOpts = {},
 ): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set("Content-Type", "application/json");
@@ -56,6 +79,9 @@ export async function request<T>(
   }
   if (init.inviteToken) {
     headers.set("X-Invite-Token", init.inviteToken);
+  }
+  if (init.roomAccess) {
+    headers.set("X-Room-Access", init.roomAccess);
   }
 
   const res = await fetch(`${API}${path}`, { ...init, headers });
@@ -73,7 +99,7 @@ export async function request<T>(
   return (await res.json()) as T;
 }
 
-export type AuthOpts = { accessToken?: string | null; inviteToken?: string | null };
+export type AuthOpts = { accessToken?: string | null; inviteToken?: string | null; roomAccess?: string | null };
 
 export function createSession(topic: string, context: string, accessToken: string) {
   return request<Session>("/api/sessions", {
@@ -85,6 +111,24 @@ export function createSession(topic: string, context: string, accessToken: strin
 
 export function fetchMyRooms(accessToken: string) {
   return request<RoomSummary[]>("/api/sessions", { accessToken });
+}
+
+/** The invited person accepts how Mediator works and chooses their PIN. */
+export function claimRoom(id: string, pin: string, auth: AuthOpts) {
+  return request<RoomAccess>(`/api/sessions/${id}/claim`, {
+    method: "POST",
+    body: JSON.stringify({ pin }),
+    ...auth,
+  });
+}
+
+/** Link + PIN: opens the invited person's room for a while. */
+export function unlockRoom(id: string, pin: string, auth: AuthOpts) {
+  return request<RoomAccess>(`/api/sessions/${id}/unlock`, {
+    method: "POST",
+    body: JSON.stringify({ pin }),
+    ...auth,
+  });
 }
 
 export function acceptConsent(id: string, auth: AuthOpts) {
@@ -215,7 +259,7 @@ export function reopenJoint(id: string, auth: AuthOpts) {
   return request<JointState>(`/api/sessions/${id}/reopen`, { method: "POST", ...auth });
 }
 
-/** Person A replaces the invite link before the other person joins. */
+/** Person A replaces the invite link. Anything already on the other side is deleted. */
 export function rotateInvite(id: string, auth: AuthOpts) {
   return request<Session>(`/api/sessions/${id}/invite/rotate`, { method: "POST", ...auth });
 }

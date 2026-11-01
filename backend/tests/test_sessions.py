@@ -12,7 +12,7 @@ from app.agents.pipeline import run_joint_pipeline as real_run_joint_pipeline
 from app.agents.state import new_shared_state
 from app.auth import Actor, load_session, require_logged_in
 from app.routers import sessions as sessions_module
-from app.routers.sessions import get_actor, router
+from app.routers.sessions import get_actor, get_entry_actor, router
 from tests.fakes import FakeSupabase
 from tests.test_pipeline import FakeAgents
 
@@ -50,6 +50,7 @@ def as_party():
 
     app.dependency_overrides[require_logged_in] = lambda: "user_123"
     app.dependency_overrides[get_actor] = actor_override
+    app.dependency_overrides[get_entry_actor] = actor_override
     yield lambda party: current.update(party=party)
     app.dependency_overrides.clear()
 

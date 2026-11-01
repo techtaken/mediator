@@ -26,7 +26,7 @@ from app.routers import admin as admin_module
 from app.routers import jobs as jobs_module
 from app.routers import joint as joint_module
 from app.routers import sessions as sessions_module
-from app.routers.sessions import get_actor
+from app.routers.sessions import get_actor, get_entry_actor
 from tests.fakes import FakeSupabase
 from tests.test_pipeline import FakeAgents
 
@@ -70,6 +70,7 @@ def as_party():
 
     app.dependency_overrides[require_logged_in] = lambda: "user_123"
     app.dependency_overrides[get_actor] = actor_override
+    app.dependency_overrides[get_entry_actor] = actor_override
     yield lambda party: current.update(party=party)
     app.dependency_overrides.clear()
 
@@ -353,15 +354,15 @@ def test_expired_unused_invite_is_refused(db):
     assert exc.value.status_code == 410 and "expired" in exc.value.detail
 
 
-def test_invite_keeps_working_once_they_have_joined(db):
+def test_invite_does_not_expire_once_they_have_joined(db):
     _session(db, invite_expires_at=_iso(-1))  # consented_b_at is set
-    _session_row, actor = resolve_actor("sess_abc", None, "token_xyz")
-    assert actor.party == "user_b"
+    _session_row, actor = resolve_actor("sess_abc", None, "token_xyz", allow_limited=True)
+    assert actor.party == "user_b" and actor.limited
 
 
 def test_unexpired_invite_works(db):
     _session(db, consented_b_at=None, invite_expires_at=_iso(3))
-    assert resolve_actor("sess_abc", None, "token_xyz")[1].party == "user_b"
+    assert resolve_actor("sess_abc", None, "token_xyz", allow_limited=True)[1].party == "user_b"
 
 
 def test_a_can_rotate_the_link_before_they_join(db, as_party):
@@ -376,8 +377,8 @@ def test_a_can_rotate_the_link_before_they_join(db, as_party):
     assert exc.value.status_code == 403
 
 
-def test_link_cannot_be_rotated_after_they_join_or_by_b(db, as_party):
-    _session(db)
+def test_link_cannot_be_rotated_after_they_share_or_by_b(db, as_party):
+    _session(db, user_b_ready=True)
     assert client.post("/api/sessions/sess_abc/invite/rotate").status_code == 409
     as_party("user_b")
     assert client.post("/api/sessions/sess_abc/invite/rotate").status_code == 403

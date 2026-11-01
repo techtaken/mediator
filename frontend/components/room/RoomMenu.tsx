@@ -4,7 +4,7 @@ import { useState } from "react";
 import { LanguagePicker } from "@/components/room/LanguagePicker";
 import type { Language } from "@/lib/types";
 
-export type RoomAction = "human" | "leave" | "delete_mine" | "delete_room";
+export type RoomAction = "human" | "leave" | "delete_mine" | "delete_room" | "reset_invite";
 
 const COPY: Record<RoomAction, { title: string; body: string; confirm: string; danger: boolean }> = {
   human: {
@@ -25,6 +25,12 @@ const COPY: Record<RoomAction, { title: string; body: string; confirm: string; d
     confirm: "Delete my data",
     danger: true,
   },
+  reset_invite: {
+    title: "Reset the invite?",
+    body: "Use this if the wrong person opened your link, or they've forgotten their PIN. Everything on their side is permanently deleted, and you won't see any of it. You'll get a new link to send, and the old one stops working.",
+    confirm: "Delete their side and make a new link",
+    danger: true,
+  },
   delete_room: {
     title: "Delete this whole room?",
     body: "This permanently deletes the room for both of you: both private chats, what you each shared, ideas and any agreement. It can't be undone.",
@@ -36,6 +42,7 @@ const COPY: Record<RoomAction, { title: string; body: string; confirm: string; d
 type Props = {
   canStop: boolean;
   isA: boolean;
+  canResetInvite: boolean;
   language: Language | null;
   onLanguage: (language: Language) => Promise<void>;
   onAction: (action: RoomAction) => Promise<void>;
@@ -55,7 +62,7 @@ function Option({ label, hint, danger, onClick }: { label: string; hint: string;
 }
 
 /** Options to stop or delete at any time: voluntary participation is a hard rule. */
-export function RoomMenu({ canStop, isA, language, onLanguage, onAction }: Props) {
+export function RoomMenu({ canStop, isA, canResetInvite, language, onLanguage, onAction }: Props) {
   const [open, setOpen] = useState(false);
   const [confirming, setConfirming] = useState<RoomAction | null>(null);
   const [typed, setTyped] = useState("");
@@ -78,7 +85,7 @@ export function RoomMenu({ canStop, isA, language, onLanguage, onAction }: Props
   }
 
   // Deleting can't be undone, so it takes a typed confirmation.
-  const needsTyping = confirming === "delete_mine" || confirming === "delete_room";
+  const needsTyping = confirming === "delete_mine" || confirming === "delete_room" || confirming === "reset_invite";
   const confirmed = !needsTyping || typed.trim().toLowerCase() === "delete";
 
   return (
@@ -172,6 +179,14 @@ export function RoomMenu({ canStop, isA, language, onLanguage, onAction }: Props
                     danger
                     onClick={() => setConfirming("delete_mine")}
                   />
+                  {canResetInvite ? (
+                    <Option
+                      label="Reset the invite"
+                      hint="Wrong person, or they forgot their PIN? Start their side again"
+                      danger
+                      onClick={() => setConfirming("reset_invite")}
+                    />
+                  ) : null}
                   {isA ? (
                     <Option
                       label="Delete this room"

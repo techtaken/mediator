@@ -11,7 +11,7 @@ from app.agents.state import new_shared_state
 from app.auth import Actor, load_session
 from app.routers import joint as joint_module
 from app.routers import sessions as sessions_module
-from app.routers.sessions import get_actor
+from app.routers.sessions import get_actor, get_entry_actor
 from tests.fakes import FakeSupabase
 from tests.test_pipeline import FakeAgents, _outbound_safety
 
@@ -55,6 +55,7 @@ def as_party():
         return load_session(session_id), actor
 
     app.dependency_overrides[get_actor] = actor_override
+    app.dependency_overrides[get_entry_actor] = actor_override
     yield lambda party: current.update(party=party)
     app.dependency_overrides.clear()
 
