@@ -392,6 +392,38 @@ def test_invite_link_is_hidden_from_a_once_they_join(db, as_party):
     assert data["invite_link"] is None and data["other_joined"] is True
 
 
+def test_a_is_told_when_an_unused_link_has_expired(db, as_party):
+    _session(db, consented_b_at=None, invite_expires_at=_iso(-1))
+    data = client.get("/api/sessions/sess_abc").json()
+    assert data["invite_expired"] is True
+    assert data["invite_link"] is None and data["other_joined"] is False
+
+
+def test_a_new_link_clears_the_expired_state(db, as_party):
+    _session(db, consented_b_at=None, invite_expires_at=_iso(-1))
+    data = client.post("/api/sessions/sess_abc/invite/rotate").json()
+    assert data["invite_expired"] is False and data["invite_link"]
+
+
+def test_a_used_link_never_counts_as_expired(db, as_party):
+    _session(db, invite_expires_at=_iso(-1))  # consented_b_at is set
+    data = client.get("/api/sessions/sess_abc").json()
+    assert data["invite_expired"] is False and data["other_joined"] is True
+
+
+def test_only_person_a_hears_about_link_expiry(db, as_party):
+    _session(db, consented_b_at=None, invite_expires_at=_iso(-1))
+    as_party("user_b")
+    assert client.get("/api/sessions/sess_abc").json()["invite_expired"] is False
+
+
+def test_my_rooms_says_which_links_have_expired(db, as_party):
+    db.add_session(id="dead", created_by="user_123", invite_expires_at=_iso(-1))
+    db.add_session(id="live", created_by="user_123", invite_expires_at=_iso(1))
+    rooms = {room["id"]: room for room in client.get("/api/sessions").json()}
+    assert rooms["dead"]["invite_expired"] is True and rooms["live"]["invite_expired"] is False
+
+
 # --- Delete my data / delete room ------------------------------------------------
 
 

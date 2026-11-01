@@ -28,7 +28,7 @@ Branch: `phase2-3-quality-and-growth` (cut from `phase0-agent-hardening`).
 ### 4. Abuse protection
 
 - `app/ratelimit.py`: in-process sliding windows. Room creation per user per hour, messages per person per room per minute, and other writes (share drafts and approvals, ideas, answers, agreement draft and sign, invite rotation) per minute. 429 with `Retry-After` and a friendly message. **Per process**: with several backend instances, move the counters to a shared store.
-- Invite links: `invite_expires_at` is set to `INVITE_TTL_DAYS` (14) at creation. An expired link is refused with 410 **only while unused**. Person A can replace the link from the room ("Sent it to the wrong person? Make a new link"); the old one stops working at once. The link is no longer the key to B's room: see "Follow-up: link + PIN" below.
+- Invite links: `invite_expires_at` is set to `INVITE_TTL_DAYS` (14) at creation. An expired link is refused with 410 **only while unused**. Person A's room and rooms list say when a link has expired, and offer a new one in place of the old link. Person A can replace the link from the room ("Sent it to the wrong person? Make a new link"); the old one stops working at once. The link is no longer the key to B's room: see "Follow-up: link + PIN" below.
 - New privacy fix found on the way: Person A used to keep seeing B's invite link, which is also B's key, so A could open B's private room. The link is now hidden from A once B has joined. **Remaining gap:** A could have copied the link earlier. A proper fix is a one-time claim that issues B a separate device token. It is not done, because B often opens the link in several browsers (WhatsApp in-app, then Chrome).
 
 ### 5. Retention and deletion

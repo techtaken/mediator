@@ -45,6 +45,7 @@ class SessionOut(BaseModel):
     # Person A only, while the other person hasn't joined yet.
     invite_expires_at: str | None = None
     other_joined: bool = True
+    invite_expired: bool = False
     needs_pin: bool = False
     # Rooms are removed this many days after they open (0: kept until deleted).
     retention_days: int = 0
@@ -74,6 +75,7 @@ class RoomSummaryOut(BaseModel):
     user_a_ready: bool
     user_b_ready: bool
     other_joined: bool = False
+    invite_expired: bool = False
 
 
 class MessageOut(BaseModel):

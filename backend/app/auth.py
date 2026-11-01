@@ -163,8 +163,8 @@ def parse_time(value: object) -> datetime | None:
 
 
 def invite_expired(session: dict, now: datetime | None = None) -> bool:
-    """An invite expires only while unused. Once the invited person has joined
-    (accepted how Mediator works), the link is their key to their own room."""
+    """An invite expires only while unused. Once the invited person has joined,
+    their PIN protects the room and the link's date no longer matters."""
     if session.get("consented_b_at"):
         return False
     expires = parse_time(session.get("invite_expires_at"))

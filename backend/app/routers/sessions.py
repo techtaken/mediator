@@ -34,6 +34,7 @@ from app.agents.telemetry import track_calls
 from app.auth import (
     PIN_REQUIRED_DETAIL,
     Actor,
+    invite_expired,
     invite_matches,
     load_session,
     parse_time,
@@ -189,9 +190,10 @@ def _other_joined(session: dict) -> bool:
 
 def _session_out(session: dict, actor: Actor) -> SessionOut:
     invite = None
-    # Once the other person has joined, the link is their key to their own
-    # room, so it is no longer shown to Person A.
-    if actor.party == "user_a" and not _other_joined(session):
+    expired = actor.party == "user_a" and invite_expired(session)
+    # Once the other person has joined, or the link has expired, there's
+    # nothing left for Person A to send.
+    if actor.party == "user_a" and not _other_joined(session) and not expired:
         invite = _invite_link(session["id"], session["invite_token_b"])
     halt_view = _halt_view(session, actor)
     return SessionOut(
@@ -213,6 +215,7 @@ def _session_out(session: dict, actor: Actor) -> SessionOut:
         i_consented=bool(session.get(_consent_field(actor.party))),
         invite_expires_at=session.get("invite_expires_at") if invite else None,
         other_joined=_other_joined(session) if actor.party == "user_a" else True,
+        invite_expired=expired,
         needs_pin=actor.limited,
         retention_days=get_settings().retention_days,
         my_data_deleted=bool(session.get(_deleted_field(actor.party))),
@@ -690,7 +693,7 @@ def my_rooms(user_id: str = Depends(require_logged_in)):
     rows = (
         get_supabase()
         .table("sessions")
-        .select("id, status, topic, created_at, user_a_ready, user_b_ready, consented_b_at")
+        .select("id, status, topic, created_at, user_a_ready, user_b_ready, consented_b_at, invite_expires_at")
         .eq("created_by", user_id)
         .order("created_at", desc=True)
         .limit(50)
@@ -707,6 +710,7 @@ def my_rooms(user_id: str = Depends(require_logged_in)):
             user_a_ready=row["user_a_ready"],
             user_b_ready=row["user_b_ready"],
             other_joined=_other_joined(row),
+            invite_expired=invite_expired(row),
         )
         for row in rows
     ]

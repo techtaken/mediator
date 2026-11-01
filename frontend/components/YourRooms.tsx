@@ -45,6 +45,7 @@ function statusOf(room: RoomSummary): { label: string; tone: string } {
     case "building_joint":
       return { label: "Preparing joint view", tone: "bg-teal/10 text-teal" };
     default:
+      if (room.invite_expired) return { label: "Invite link expired", tone: "bg-terracotta/10 text-terracotta" };
       if (!room.other_joined) return { label: "Waiting for them to join", tone: "bg-ink/[0.06] text-muted" };
       if (room.user_a_ready && !room.user_b_ready) return { label: "Waiting for them", tone: "bg-ink/[0.06] text-muted" };
       return { label: "Talking privately", tone: "bg-terracotta/10 text-terracotta" };

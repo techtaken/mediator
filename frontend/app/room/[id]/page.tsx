@@ -405,6 +405,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
       <WaitingPanel
         shared={session.my_share}
         otherReady={Boolean(otherReady)}
+        otherJoined={session.other_joined}
         busy={busy}
         onWithdraw={() => void run(() => withdrawShare(id, auth))}
         onRetry={() => void run(() => retryJoint(id, auth))}
@@ -488,6 +489,27 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
           </div>
           </>
         ) : null}
+        {isA && session?.invite_expired && session.status === "intake" ? (
+          <div className="mt-3 rounded-2xl bg-terracotta/10 px-3 py-3">
+            <p className="text-sm font-medium text-terracotta">This link has expired</p>
+            <p className="mt-0.5 text-xs leading-relaxed text-muted">
+              Nobody joined with it, so it no longer works. Make a new one to invite them.
+            </p>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void run(() => rotateInvite(id, auth))}
+              className="mt-2.5 w-full rounded-full bg-teal px-3 py-2 text-sm text-card disabled:opacity-50"
+            >
+              {busy ? "One moment…" : "Make a new link"}
+            </button>
+          </div>
+        ) : null}
+        {isA && session?.other_joined && session.status === "intake" ? (
+          <p className="mt-3 rounded-2xl bg-teal/10 px-3 py-2 text-sm text-teal">
+            They&apos;ve joined. Their chat stays private.
+          </p>
+        ) : null}
       </header>
 
       {session?.my_data_deleted && session.status !== "halted" ? (
@@ -508,7 +530,11 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
         <form onSubmit={onSend} className="border-t border-ink/10 bg-paper px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
           <div className="mb-2.5 flex items-center justify-between gap-3 px-1 text-xs">
             <span className="text-muted">
-              {otherReady ? "The other person has shared their side" : "The other person is still talking"}
+              {!session?.other_joined
+                ? "They haven't joined yet"
+                : otherReady
+                  ? "The other person has shared their side"
+                  : "The other person is still talking"}
             </span>
             <button
               type="button"
