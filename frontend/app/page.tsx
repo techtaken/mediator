@@ -1,70 +1,51 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { FormEvent, useState } from "react";
-import { YourRooms } from "@/components/YourRooms";
-import { createSession } from "@/lib/api";
+import { NewRoomForm } from "@/components/NewRoomForm";
+import { YourRooms, useMyRooms } from "@/components/YourRooms";
 import { getSupabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/useAuth";
 
-export default function HomePage() {
-  const router = useRouter();
-  const { accessToken, loading, user } = useAuth();
-  const [topic, setTopic] = useState("");
-  const [context, setContext] = useState("");
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  async function onCreate(event: FormEvent) {
-    event.preventDefault();
-    if (!accessToken) {
-      router.push("/login");
-      return;
-    }
-    setBusy(true);
-    setError("");
-    try {
-      const session = await createSession(topic.trim(), context, accessToken);
-      router.push(`/room/${session.id}`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not start a room");
-      setBusy(false);
-    }
-  }
-
+function Header({ signedIn }: { signedIn: boolean }) {
   async function signOut() {
     await getSupabase().auth.signOut();
   }
 
   return (
-    <main className="mx-auto flex min-h-full w-full max-w-lg flex-col px-5 py-10">
-      <header className="flex items-center justify-between">
-        <p className="text-sm tracking-[0.2em] text-terracotta uppercase">Mediator</p>
-        {user ? (
-          <button
-            type="button"
-            onClick={signOut}
-            className="text-sm text-muted underline-offset-4 hover:underline"
-          >
-            Sign out
-          </button>
-        ) : (
-          <Link href="/login" className="text-sm text-muted underline-offset-4 hover:underline">
-            Sign in
-          </Link>
-        )}
-      </header>
+    <header className="flex items-center justify-between">
+      <p className="text-sm tracking-[0.2em] text-terracotta uppercase">Mediator</p>
+      {signedIn ? (
+        <button type="button" onClick={signOut} className="text-sm text-muted underline-offset-4 hover:underline">
+          Sign out
+        </button>
+      ) : (
+        <Link href="/login" className="text-sm text-muted underline-offset-4 hover:underline">
+          Sign in
+        </Link>
+      )}
+    </header>
+  );
+}
 
+function Footer() {
+  return (
+    <p className="mt-auto pt-10 text-xs leading-relaxed text-muted">
+      Not for crisis, violence, or legal advice. If you are in danger, call 112.
+    </p>
+  );
+}
+
+function Intro() {
+  return (
+    <>
       <h1 className="mt-12 font-[family-name:var(--font-display)] text-4xl leading-tight text-ink">
         Two private rooms.
         <br />
         One calmer conversation.
       </h1>
       <p className="mt-4 text-lg leading-relaxed text-muted">
-        For Indian family and household disputes. You vent privately in Hinglish or English. The
-        other person never sees your raw words. Mediator translates both sides into needs, then
-        offers a few workable compromises.
+        For Indian family and household disputes. You vent privately in Hinglish or English. The other person never
+        sees your raw words. Mediator translates both sides into needs, then offers a few workable compromises.
       </p>
 
       <ol className="mt-8 space-y-3 text-sm text-ink">
@@ -78,63 +59,65 @@ export default function HomePage() {
           3. When both are ready, a joint view shows the neutralized picture.
         </li>
       </ol>
+    </>
+  );
+}
 
-      {loading ? (
-        <p className="mt-10 text-muted">Loading…</p>
-      ) : user ? (
-        <form onSubmit={onCreate} className="mt-10 space-y-4">
-          <label className="block text-sm text-muted">
-            What is this about?
-            <span className="mt-1 block text-xs">
-              The other person will see this line exactly as you write it, so they know why you invited them.
-            </span>
-            <textarea
-              value={topic}
-              onChange={(e) => setTopic(e.target.value)}
-              required
-              minLength={3}
-              maxLength={300}
-              rows={2}
-              placeholder="e.g. You went on the Goa trip without me"
-              className="mt-2 w-full resize-none rounded-2xl border border-ink/10 bg-card px-4 py-3 text-base text-ink outline-none focus:border-terracotta"
-            />
-          </label>
-          <label className="block text-sm text-muted">
-            Relationship context (optional)
-            <span className="mt-1 block text-xs">
-              The mediator uses this in both rooms. Say who you are to each other, not what happened.
-            </span>
-            <input
-              value={context}
-              onChange={(e) => setContext(e.target.value)}
-              maxLength={500}
-              placeholder="e.g. siblings sharing a flat in Pune"
-              className="mt-2 w-full rounded-2xl border border-ink/10 bg-card px-4 py-3 text-base text-ink outline-none focus:border-terracotta"
-            />
-          </label>
-          {error ? <p className="text-sm text-terracotta">{error}</p> : null}
-          <button
-            type="submit"
-            disabled={busy || topic.trim().length < 3}
-            className="w-full rounded-full bg-teal px-5 py-3.5 text-base text-card disabled:opacity-60"
-          >
-            {busy ? "Opening room…" : "Start a session"}
-          </button>
-        </form>
-      ) : (
+export default function HomePage() {
+  const { accessToken, loading, user } = useAuth();
+  const rooms = useMyRooms(accessToken);
+
+  // Someone coming back sees their rooms first; starting another one is a separate page.
+  if (accessToken && Array.isArray(rooms) && rooms.length > 0) {
+    return (
+      <main className="mx-auto flex min-h-full w-full max-w-lg flex-col px-5 py-10">
+        <Header signedIn />
+        <h1 className="mt-10 font-[family-name:var(--font-display)] text-3xl text-ink">Your rooms</h1>
         <Link
-          href="/login"
-          className="mt-10 inline-flex w-full items-center justify-center rounded-full bg-teal px-5 py-3.5 text-base text-card"
+          href="/new"
+          className="mt-6 inline-flex w-full items-center justify-center rounded-full bg-teal px-5 py-3.5 text-base text-card"
         >
-          Sign in to start a session
+          Start a new conversation
         </Link>
+        <div className="mt-10">
+          <YourRooms rooms={rooms} />
+        </div>
+        <Footer />
+      </main>
+    );
+  }
+
+  const checkingRooms = Boolean(accessToken) && rooms === null;
+
+  return (
+    <main className="mx-auto flex min-h-full w-full max-w-lg flex-col px-5 py-10">
+      <Header signedIn={Boolean(user)} />
+      {loading || checkingRooms ? (
+        <div className="mt-12 space-y-3" aria-label="Loading">
+          <div className="h-10 w-2/3 animate-pulse rounded-2xl bg-ink/[0.06]" />
+          <div className="h-24 animate-pulse rounded-3xl bg-ink/[0.06]" />
+        </div>
+      ) : (
+        <>
+          <Intro />
+          {accessToken ? (
+            <div className="mt-10">
+              {rooms === "failed" ? (
+                <p className="mb-4 text-sm text-muted">Couldn&apos;t load your rooms right now.</p>
+              ) : null}
+              <NewRoomForm accessToken={accessToken} />
+            </div>
+          ) : (
+            <Link
+              href="/login"
+              className="mt-10 inline-flex w-full items-center justify-center rounded-full bg-teal px-5 py-3.5 text-base text-card"
+            >
+              Sign in to start a session
+            </Link>
+          )}
+        </>
       )}
-
-      {accessToken ? <YourRooms accessToken={accessToken} /> : null}
-
-      <p className="mt-8 text-xs leading-relaxed text-muted">
-        Not for crisis, violence, or legal advice. If you are in danger, call 112.
-      </p>
+      <Footer />
     </main>
   );
 }

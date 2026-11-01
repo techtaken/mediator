@@ -478,3 +478,11 @@ def test_my_rooms_lists_only_my_rooms_newest_first(db, as_party):
     rooms = client.get("/api/sessions").json()
     assert [room["id"] for room in rooms] == ["new", "old"]
     assert "invite_token_b" not in rooms[0] and "mediation_state" not in rooms[0]
+
+
+def test_my_rooms_says_whether_the_other_person_joined(db, as_party):
+    db.add_session(id="waiting", created_by="user_123", topic="Waiting")
+    db.add_session(id="joined", created_by="user_123", topic="Joined", consented_b_at="2026-02-01T00:00:00Z")
+    rooms = {room["id"]: room for room in client.get("/api/sessions").json()}
+    assert rooms["waiting"]["other_joined"] is False
+    assert rooms["joined"]["other_joined"] is True

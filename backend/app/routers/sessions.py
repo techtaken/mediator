@@ -648,7 +648,7 @@ def my_rooms(user_id: str = Depends(require_logged_in)):
     rows = (
         get_supabase()
         .table("sessions")
-        .select("id, status, topic, created_at, user_a_ready, user_b_ready")
+        .select("id, status, topic, created_at, user_a_ready, user_b_ready, consented_b_at")
         .eq("created_by", user_id)
         .order("created_at", desc=True)
         .limit(50)
@@ -656,7 +656,18 @@ def my_rooms(user_id: str = Depends(require_logged_in)):
         .data
         or []
     )
-    return [RoomSummaryOut(**row) for row in rows]
+    return [
+        RoomSummaryOut(
+            id=row["id"],
+            status=row["status"],
+            topic=row.get("topic"),
+            created_at=row["created_at"],
+            user_a_ready=row["user_a_ready"],
+            user_b_ready=row["user_b_ready"],
+            other_joined=_other_joined(row),
+        )
+        for row in rows
+    ]
 
 
 @router.post("/sessions/{session_id}/consent", response_model=SessionOut)

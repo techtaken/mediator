@@ -33,6 +33,7 @@ export type RoomSummary = {
   created_at: string;
   user_a_ready: boolean;
   user_b_ready: boolean;
+  other_joined: boolean;
 };
 
 export type ShareDraft = {

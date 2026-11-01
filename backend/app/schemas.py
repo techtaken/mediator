@@ -63,6 +63,7 @@ class RoomSummaryOut(BaseModel):
     created_at: str
     user_a_ready: bool
     user_b_ready: bool
+    other_joined: bool = False
 
 
 class MessageOut(BaseModel):
