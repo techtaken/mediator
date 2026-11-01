@@ -128,6 +128,12 @@ export default function AdminSessionPage({ params }: { params: Promise<{ id: str
           <dd>{session.id}</dd>
           <dt className="text-muted">Status</dt>
           <dd>{session.status}</dd>
+          <dt className="text-muted">Names A / B</dt>
+          <dd>
+            {String(session.name_a ?? "—")} / {String(session.name_b ?? "—")}
+          </dd>
+          <dt className="text-muted">Invited as</dt>
+          <dd>{String(session.invited_as ?? "—")}</dd>
           <dt className="text-muted">Context</dt>
           <dd>{session.relationship_context ?? "—"}</dd>
           <dt className="text-muted">Created</dt>

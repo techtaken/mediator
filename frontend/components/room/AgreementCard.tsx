@@ -17,12 +17,13 @@ const CHECKINS: { days: number; label: string }[] = [
 type Props = {
   agreement: Agreement;
   agreedCount: number;
+  otherName?: string | null;
   /** checkinDays: when to privately ask this person how it's going (0 = never). */
   onSign: (checkinDays: number) => Promise<void>;
   onRedraft: () => Promise<void>;
 };
 
-export function AgreementCard({ agreement, agreedCount, onSign, onRedraft }: Props) {
+export function AgreementCard({ agreement, agreedCount, otherName, onSign, onRedraft }: Props) {
   const [confirmed, setConfirmed] = useState(false);
   const [checkin, setCheckin] = useState(14);
   const [busy, setBusy] = useState<"sign" | "redraft" | null>(null);
@@ -81,7 +82,7 @@ export function AgreementCard({ agreement, agreedCount, onSign, onRedraft }: Pro
         <dl className="mt-5 grid grid-cols-2 gap-2 text-[13px]">
           {[
             { label: "You", at: agreement.signed_by_me_at },
-            { label: "Them", at: agreement.signed_by_them_at },
+            { label: otherName ?? "Them", at: agreement.signed_by_them_at },
           ].map((row) => (
             <div key={row.label} className="rounded-2xl border border-ink/10 px-3 py-2">
               <dt className="text-muted">{row.label}</dt>
@@ -140,7 +141,7 @@ export function AgreementCard({ agreement, agreedCount, onSign, onRedraft }: Pro
                 </button>
               </>
             ) : (
-              <p className="text-center text-sm text-muted">You&apos;ve signed. Waiting for them to sign.</p>
+              <p className="text-center text-sm text-muted">You&apos;ve signed. Waiting for {otherName ?? "them"} to sign.</p>
             )}
             <button
               type="button"

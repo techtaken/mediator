@@ -3,7 +3,14 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from app.agents.state import SHARED_PARTY_KEYS, empty_private, new_shared_state, normalize_private, pending_audit
+from app.agents.state import (
+    SHARED_PARTY_KEYS,
+    empty_party,
+    empty_private,
+    new_shared_state,
+    normalize_private,
+    pending_audit,
+)
 from app.db import get_supabase
 from app.retention import structured_audit
 
@@ -21,8 +28,15 @@ class StateConflict(RuntimeError):
 def load_state(session: dict[str, Any]) -> dict[str, Any]:
     stored = session.get("mediation_state")
     if isinstance(stored, dict) and stored.get("dispute_id"):
-        return scrub_legacy_state(stored)
-    return new_shared_state(session["id"], session.get("relationship_context"))
+        state = scrub_legacy_state(stored)
+    else:
+        state = new_shared_state(session["id"], session.get("relationship_context"))
+    # The room owns the names, so the mediator always sees what people see.
+    parties = state.setdefault("parties", {})
+    parties.setdefault("A", empty_party())["name"] = session.get("name_a")
+    # Their own name once they've joined; until then, what Person A calls them.
+    parties.setdefault("B", empty_party())["name"] = session.get("name_b") or session.get("invited_as")
+    return state
 
 
 def scrub_legacy_state(state: dict[str, Any]) -> dict[str, Any]:

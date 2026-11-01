@@ -319,9 +319,10 @@ def test_message_rate_limit(db, as_party, agents):
 
 
 def test_session_creation_rate_limit(db, as_party):
+    db.table("profiles").insert({"user_id": "user_123", "name": "Rahul"}).execute()
     with _limits(rate_limit_sessions_per_hour=1):
-        assert client.post("/api/sessions", json={"topic": "Rent split"}).status_code == 200
-        assert client.post("/api/sessions", json={"topic": "Rent split"}).status_code == 429
+        assert client.post("/api/sessions", json={"topic": "Rent split", "invited_name": "Priya"}).status_code == 200
+        assert client.post("/api/sessions", json={"topic": "Rent split", "invited_name": "Priya"}).status_code == 429
     assert len(db.rows("sessions")) == 1
 
 
@@ -341,7 +342,8 @@ def _iso(days: float) -> str:
 
 
 def test_new_rooms_get_an_invite_expiry(db, as_party):
-    data = client.post("/api/sessions", json={"topic": "Rent split"}).json()
+    db.table("profiles").insert({"user_id": "user_123", "name": "Rahul"}).execute()
+    data = client.post("/api/sessions", json={"topic": "Rent split", "invited_name": "Priya"}).json()
     expires = datetime.fromisoformat(db.rows("sessions")[0]["invite_expires_at"])
     assert timedelta(days=13) < expires - datetime.now(timezone.utc) <= timedelta(days=14)
     assert data["invite_expires_at"] and data["other_joined"] is False

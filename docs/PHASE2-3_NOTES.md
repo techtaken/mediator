@@ -160,3 +160,16 @@ Known limits:
 - Forgetting the PIN after sharing means the room can't be reopened by B, and nobody can recover it.
 - A PIN doesn't stop someone watching B type it, or pressuring B to hand it over.
 - A room B joined before this change has no PIN, so whoever next opens its link can set one. This matters only for rooms that existed before migration 010; nothing is deployed yet.
+
+## Follow-up: names
+
+Both people give a name, and each sees the other's.
+
+- **Person A** is asked once after signing in, and can change it by tapping their name on the home page. It lives in `profiles`. Rooms can't be opened without one (409). Each room keeps a copy in `sessions.name_a`; changing the name updates open rooms only.
+- **Person B** gives it on the same screen as the PIN. `POST /claim` saves both together in `sessions.name_b`, so nobody joins without one. It lives only on that room.
+- **Who's invited.** Opening a room also asks what A calls the other person (`sessions.invited_as`, e.g. "Priya" or "Bhaiya"). It's used on A's screens, in A's private chat and in the invite until B joins. B's join screen starts with it filled in, B can change it, and B's own name then takes over everywhere, including what both people read. A sees "Amit has joined (you invited Bhaiya)". After joining, B no longer sees what A wrote. This stores a name for someone who hasn't agreed to anything yet, so B's consent card says so, and it's removed with the room or with either person's "Delete my data".
+- **What's a name:** letters in any script, spaces and `. ' -`, up to 40 characters. No digits or links, because the other person sees it and it reaches the mediator's prompts, where it sits inside the shared-state data block.
+- **The mediator** reads names from the room on every `load_state`, so it always matches the screens. CAUCUS is told to use them sparingly and OPTIONS to prefer them over roles. These two prompt changes have not been run against the live model yet.
+- **Removal:** deleting a room removes both copies. Resetting the invite removes B's. "Delete my data" removes that person's from the room. A's profile name stays, as there's no "delete my account" yet.
+- Rooms from before this change have no names, and the screens say "They" or "The other person" instead.
+

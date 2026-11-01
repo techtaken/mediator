@@ -15,21 +15,22 @@ const THEIR_ANSWER: Record<IdeaResponse, string> = {
   no: "Not for them",
 };
 
-const SOURCE_LABEL: Record<JointIdea["source"], string> = {
-  mediator: "Suggested by the mediator",
-  you: "Your idea",
-  them: "Their idea",
-};
+function sourceLabel(source: JointIdea["source"], otherName: string | null | undefined) {
+  if (source === "mediator") return "Suggested by the mediator";
+  if (source === "you") return "Your idea";
+  return otherName ? `${otherName}'s idea` : "Their idea";
+}
 
 type Props = {
   idea: JointIdea;
   index: number;
   locked: boolean;
+  otherName?: string | null;
   onAnswer: (response: IdeaResponse, note: string | null) => Promise<void>;
   onThink?: () => Promise<void>;
 };
 
-export function IdeaCard({ idea, index, locked, onAnswer, onThink }: Props) {
+export function IdeaCard({ idea, index, locked, otherName, onAnswer, onThink }: Props) {
   const [noteOpen, setNoteOpen] = useState(false);
   const [thinking, setThinking] = useState(false);
   const [note, setNote] = useState(idea.my_note ?? "");
@@ -68,7 +69,7 @@ export function IdeaCard({ idea, index, locked, onAnswer, onThink }: Props) {
       }`}
     >
       <div className="flex items-start justify-between gap-3">
-        <p className="text-[11px] font-medium tracking-[0.14em] text-muted uppercase">{SOURCE_LABEL[idea.source]}</p>
+        <p className="text-[11px] font-medium tracking-[0.14em] text-muted uppercase">{sourceLabel(idea.source, otherName)}</p>
         {idea.agreed ? (
           <span className="shrink-0 rounded-full bg-teal px-2.5 py-0.5 text-[11px] font-medium text-card">✓ Agreed</span>
         ) : null}
@@ -168,7 +169,7 @@ export function IdeaCard({ idea, index, locked, onAnswer, onThink }: Props) {
         ) : null}
         {theirLine ? (
           <p className={idea.other_response === "yes" && idea.my_response ? "text-teal" : "text-muted"}>
-            Them: {theirLine}
+            {otherName ?? "Them"}: {theirLine}
             {idea.my_response && idea.other_note ? <span className="text-ink"> · “{idea.other_note}”</span> : null}
           </p>
         ) : null}

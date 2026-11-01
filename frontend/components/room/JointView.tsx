@@ -54,7 +54,7 @@ function TheirWords({ session, text, auth }: { session: Session; text: string; a
 
   return (
     <figure className="rounded-3xl border border-ink/10 bg-paper p-5">
-      <figcaption className="text-xs font-medium tracking-[0.16em] text-terracotta uppercase">The other person</figcaption>
+      <figcaption className="text-xs font-medium tracking-[0.16em] text-terracotta uppercase">{session.other_name ?? "The other person"}</figcaption>
       <blockquote className="mt-3 text-[15px] leading-relaxed whitespace-pre-wrap text-ink">{text}</blockquote>
       {translation?.translation ? (
         <div className="mt-4 border-t border-dashed border-ink/15 pt-3">
@@ -178,7 +178,7 @@ export function JointView({ session, summary, joint, followUp, auth, onJoint, on
 
       {signed && joint?.agreement ? (
         <div className="mt-6">
-          <AgreementCard agreement={joint.agreement} agreedCount={joint.agreed_count} onSign={async () => {}} onRedraft={async () => {}} />
+          <AgreementCard agreement={joint.agreement} otherName={session.other_name} agreedCount={joint.agreed_count} onSign={async () => {}} onRedraft={async () => {}} />
         </div>
       ) : null}
 
@@ -226,6 +226,7 @@ export function JointView({ session, summary, joint, followUp, auth, onJoint, on
                         idea={idea}
                         index={index}
                         locked={false}
+                        otherName={session.other_name}
                         onAnswer={(response: IdeaResponse, note: string | null) =>
                           quiet(() => respondToIdea(session.id, idea.id, response, note, auth))
                         }
@@ -249,7 +250,7 @@ export function JointView({ session, summary, joint, followUp, auth, onJoint, on
           <div className="mt-8 border-t border-ink/10 pt-6">
             {joint?.agreement ? (
               <AgreementCard
-                agreement={joint.agreement}
+                agreement={joint.agreement} otherName={session.other_name}
                 agreedCount={joint.agreed_count}
                 onSign={(days) => quiet(() => signAgreement(session.id, joint.agreement!.version, days, auth))}
                 onRedraft={() => quiet(() => draftAgreement(session.id, auth))}

@@ -4,7 +4,7 @@ import { useState } from "react";
 import { LanguagePicker } from "@/components/room/LanguagePicker";
 import type { Language } from "@/lib/types";
 
-function points(retentionDays: number): { title: string; body: string }[] {
+function points(retentionDays: number, invitedAs: string | null | undefined): { title: string; body: string }[] {
   return [
   {
     title: "You're talking to an AI",
@@ -12,7 +12,7 @@ function points(retentionDays: number): { title: string; body: string }[] {
   },
   {
     title: "This room is private",
-    body: "The other person never sees your chat. They only see words you review and approve.",
+    body: "The other person sees your name, but never your chat. They only see words you review and approve.",
   },
   {
     title: "The Mediator team can see conversations",
@@ -20,7 +20,9 @@ function points(retentionDays: number): { title: string; body: string }[] {
   },
   {
     title: "You control your data",
-    body: `Delete your private chat any time from Options. ${
+    body: `${
+      invitedAs ? `The person who invited you gave us the name "${invitedAs}", which you can change next. ` : ""
+    }Delete your private chat any time from Options. ${
       retentionDays > 0 ? `Rooms are removed automatically after ${retentionDays} days. ` : ""
     }The mediator's working notes on each step are cleared after 30 days.`,
   },
@@ -38,12 +40,13 @@ function points(retentionDays: number): { title: string; body: string }[] {
 /** Shown before a person's first message. Accepting is recorded on the server. */
 type Props = {
   retentionDays: number;
+  invitedAs?: string | null;
   language: Language | null;
   onLanguage: (language: Language) => Promise<void>;
   onAccept: () => Promise<void>;
 };
 
-export function ConsentCard({ retentionDays, language, onLanguage, onAccept }: Props) {
+export function ConsentCard({ retentionDays, invitedAs, language, onLanguage, onAccept }: Props) {
   const [busy, setBusy] = useState(false);
 
   async function accept() {
@@ -61,7 +64,7 @@ export function ConsentCard({ retentionDays, language, onLanguage, onAccept }: P
       <h1 className="mt-2 font-[family-name:var(--font-display)] text-3xl leading-tight text-ink">How Mediator works</h1>
 
       <ul className="mt-6 space-y-3">
-        {points(retentionDays).map((point, index) => (
+        {points(retentionDays, invitedAs).map((point, index) => (
           <li key={point.title} className="flex gap-3 rounded-3xl bg-card p-4 shadow-[0_1px_0_rgba(36,28,22,0.08)]">
             <span className="font-[family-name:var(--font-display)] text-lg leading-none text-terracotta">{index + 1}</span>
             <span>

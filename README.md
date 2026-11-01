@@ -37,6 +37,8 @@ When a room halts, only the party who triggered it sees why, with helplines. The
    - `008_phase2_quality.sql`: per-call agent stats, expiring invite links, "delete my data" markers, audit-reason retention
    - `009_phase3_growth.sql`: check-ins after an agreement, the referral inbox, language preference, translations, private "think it through" questions
    - `010_invite_pin.sql`: the invited person's PIN and the short-lived access tokens it unlocks
+   - `011_names.sql`: Person A's profile name, and each room's two names
+   - `012_invited_name.sql`: what Person A calls the person they're inviting
 4. Copy keys from **Project Settings → API**:
    - Project URL
    - Publishable key (`sb_publishable_…`) for the browser

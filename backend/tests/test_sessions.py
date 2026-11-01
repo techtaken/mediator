@@ -73,7 +73,8 @@ def _session(db, **overrides):
 
 
 def test_create_session_saves_initial_state(db, as_party):
-    response = client.post("/api/sessions", json={"topic": "Rent split", "relationship_context": "Roommates"})
+    db.table("profiles").insert({"user_id": "user_123", "name": "Rahul"}).execute()
+    response = client.post("/api/sessions", json={"topic": "Rent split", "invited_name": "Priya", "relationship_context": "Roommates"})
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "intake" and data["party"] == "user_a"
@@ -93,7 +94,8 @@ def test_get_session_hides_invite_from_b(db, as_party):
 
 
 def _open_room_and_join(as_party, db, topic="You went on the Goa trip without me"):
-    client.post("/api/sessions", json={"topic": topic, "relationship_context": "Siblings"})
+    db.table("profiles").insert({"user_id": "user_123", "name": "Rahul"}).execute()
+    client.post("/api/sessions", json={"topic": topic, "invited_name": "Priya", "relationship_context": "Siblings"})
     sid = db.rows("sessions")[0]["id"]
     as_party("user_b")
     client.get(f"/api/sessions/{sid}")
@@ -113,8 +115,8 @@ def test_both_welcome_messages_disclose_the_ai_once(db, as_party):
 def test_b_is_told_who_opened_the_room_and_why(db, as_party):
     _open_room_and_join(as_party, db)
     (welcome_b,) = db.rows("messages", audience_role="user_b")
-    assert "The person who invited you can't read it" in welcome_b["content"]
-    assert "They opened this room about" in welcome_b["content"]
+    assert "Rahul can't read it" in welcome_b["content"]
+    assert "Rahul opened this room about" in welcome_b["content"]
     assert '"You went on the Goa trip without me"' in welcome_b["content"]
     assert "your side" in welcome_b["content"]
     (welcome_a,) = db.rows("messages", audience_role="user_a")

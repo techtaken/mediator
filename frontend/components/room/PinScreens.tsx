@@ -33,8 +33,15 @@ function PinField({
   );
 }
 
+type ChoosePinProps = {
+  inviter: string | null;
+  invitedAs: string | null;
+  onChoose: (pin: string, name: string) => Promise<void>;
+};
+
 /** First visit: the person who invited you has this link too, so it can't be the key. */
-export function ChoosePin({ onChoose }: { onChoose: (pin: string) => Promise<void> }) {
+export function ChoosePin({ inviter, invitedAs, onChoose }: ChoosePinProps) {
+  const [name, setName] = useState(invitedAs ?? "");
   const [pin, setPin] = useState("");
   const [again, setAgain] = useState("");
   const [error, setError] = useState("");
@@ -49,7 +56,7 @@ export function ChoosePin({ onChoose }: { onChoose: (pin: string) => Promise<voi
     setBusy(true);
     setError("");
     try {
-      await onChoose(pin);
+      await onChoose(pin, name);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save your PIN");
       setBusy(false);
@@ -59,13 +66,28 @@ export function ChoosePin({ onChoose }: { onChoose: (pin: string) => Promise<voi
   return (
     <section className="flex-1 overflow-y-auto px-4 py-6">
       <p className="text-xs font-medium tracking-[0.18em] text-terracotta uppercase">One last step</p>
-      <h1 className="mt-2 font-[family-name:var(--font-display)] text-3xl leading-tight text-ink">Choose a 6-digit PIN</h1>
-      <p className="mt-3 text-[15px] leading-relaxed text-muted">
-        The person who invited you has this link too. Your PIN is what keeps your room yours: without it, the link opens
-        nothing. Keep it to yourself.
-      </p>
+      <h1 className="mt-2 font-[family-name:var(--font-display)] text-3xl leading-tight text-ink">Your name and a PIN</h1>
       <form onSubmit={submit} className="mt-6 space-y-4">
-        <PinField label="Your PIN" value={pin} onChange={setPin} autoFocus autoComplete="new-password" />
+        <label className="block text-sm text-muted">
+          Your name
+          <span className="mt-1 block text-xs">
+            {inviter ?? "The person who invited you"} will see this, and the mediator will use it.
+            {invitedAs ? " Change it if you'd rather be called something else." : ""}
+          </span>
+          <input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            autoFocus
+            maxLength={40}
+            autoComplete="given-name"
+            className="mt-2 w-full rounded-2xl border border-ink/10 bg-card px-4 py-3 text-base text-ink outline-none focus:border-terracotta"
+          />
+        </label>
+        <p className="text-[15px] leading-relaxed text-muted">
+          {inviter ?? "The person who invited you"} has this link too. A 6-digit PIN is what keeps your room yours: without
+          it, the link opens nothing. Keep it to yourself.
+        </p>
+        <PinField label="Choose a PIN" value={pin} onChange={setPin} autoComplete="new-password" />
         <PinField label="Type it again" value={again} onChange={setAgain} autoComplete="new-password" />
         <ul className="list-disc space-y-1 pl-5 text-[13px] leading-relaxed text-muted">
           <li>Don&apos;t use a birthday or an easy pattern. Family can guess those.</li>
@@ -78,7 +100,7 @@ export function ChoosePin({ onChoose }: { onChoose: (pin: string) => Promise<voi
         ) : null}
         <button
           type="submit"
-          disabled={busy || pin.length !== 6 || again.length !== 6}
+          disabled={busy || !name.trim() || pin.length !== 6 || again.length !== 6}
           className="w-full rounded-full bg-teal px-5 py-3.5 text-base font-medium text-card disabled:opacity-50"
         >
           {busy ? "One moment…" : "Open my private room"}

@@ -21,7 +21,7 @@ const COPY: Record<RoomAction, { title: string; body: string; confirm: string; d
   },
   delete_mine: {
     title: "Delete your data?",
-    body: "This permanently deletes your private chat with the mediator, its notes about you and your drafts. If the room is still open, it also ends the session for both of you; they only see that it's paused. Words you already shared in the joint view stay there, because the other person has read them.",
+    body: "This permanently deletes your private chat with the mediator, its notes about you, your drafts and your name in this room. If the room is still open, it also ends the session for both of you; they only see that it's paused. Words you already shared in the joint view stay there, because the other person has read them.",
     confirm: "Delete my data",
     danger: true,
   },

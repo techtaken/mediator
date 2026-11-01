@@ -52,8 +52,8 @@ const PLACEHOLDER: Record<Language, string> = {
 };
 const noopSubscribe = () => () => {};
 
-function whatsappHref(link: string) {
-  const text = `I opened a private Mediator room so we can talk this through calmly. Your side stays private. Join here: ${link}`;
+function whatsappHref(link: string, name: string | null) {
+  const text = `${name ? `Hi ${name}, I` : "I"} opened a private Mediator room so we can talk this through calmly. Your side stays private. Join here: ${link}`;
   return `https://wa.me/?text=${encodeURIComponent(text)}`;
 }
 
@@ -192,13 +192,13 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     };
   }, [canLoad, id, auth, refreshKey, askedForPin]);
 
-  async function choosePin(pin: string) {
+  async function choosePin(pin: string, name: string) {
     // The link stops working the moment the PIN is saved. A refresh sent with
     // just the link would then ask for the PIN they only just chose, so hold
     // refreshes until the access token is here.
     setClaiming(true);
     try {
-      saveRoomAccess(id, await claimRoom(id, pin, auth));
+      saveRoomAccess(id, await claimRoom(id, pin, name, auth));
       setTermsAccepted(false);
     } catch (err) {
       if (!askedForPin(err)) throw err;
@@ -362,12 +362,13 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
   } else if (session.status === "halted") {
     body = <HaltPanel session={session} />;
   } else if (needsPin && (session.i_consented || termsAccepted)) {
-    body = <ChoosePin onChoose={choosePin} />;
+    body = <ChoosePin inviter={session.other_name} invitedAs={session.invited_as} onChoose={choosePin} />;
   } else if (needsPin) {
     // Accepting is recorded together with the PIN, so nobody joins without one.
     body = (
       <ConsentCard
         retentionDays={session.retention_days}
+        invitedAs={session.invited_as}
         language={session.my_language}
         onLanguage={(language) => run(() => setLanguage(id, language, auth))}
         onAccept={async () => setTermsAccepted(true)}
@@ -406,6 +407,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
         shared={session.my_share}
         otherReady={Boolean(otherReady)}
         otherJoined={session.other_joined}
+        otherName={session.other_name}
         busy={busy}
         onWithdraw={() => void run(() => withdrawShare(id, auth))}
         onRetry={() => void run(() => retryJoint(id, auth))}
@@ -439,8 +441,15 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
         {session?.status !== "halted" ? <Steps current={currentStep(session, reviewing)} /> : null}
         {session?.topic ? (
           <p className="mt-3 text-sm leading-snug text-ink">
-            <span className="text-muted">{isA ? "You opened this about: " : "They opened this about: "}</span>
+            <span className="text-muted">
+              {isA ? "You opened this about: " : `${session.other_name ?? "They"} opened this about: `}
+            </span>
             {session.topic}
+          </p>
+        ) : null}
+        {needsPin && session?.invited_as ? (
+          <p className="mt-1.5 text-xs text-muted">
+            This invite is for {session.invited_as}. If that isn&apos;t you, please close this page.
           </p>
         ) : null}
         {isA && session?.invite_link && session.status === "intake" ? (
@@ -455,7 +464,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
             </button>
             <a
               className="flex-1 rounded-full bg-teal px-3 py-2 text-center text-sm text-card"
-              href={whatsappHref(session.invite_link)}
+              href={whatsappHref(session.invite_link, session.other_name)}
               target="_blank"
               rel="noreferrer"
             >
@@ -493,7 +502,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
           <div className="mt-3 rounded-2xl bg-terracotta/10 px-3 py-3">
             <p className="text-sm font-medium text-terracotta">This link has expired</p>
             <p className="mt-0.5 text-xs leading-relaxed text-muted">
-              Nobody joined with it, so it no longer works. Make a new one to invite them.
+              Nobody joined with it, so it no longer works. Make a new one to invite {session.other_name ?? "them"}.
             </p>
             <button
               type="button"
@@ -507,7 +516,11 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
         ) : null}
         {isA && session?.other_joined && session.status === "intake" ? (
           <p className="mt-3 rounded-2xl bg-teal/10 px-3 py-2 text-sm text-teal">
-            They&apos;ve joined. Their chat stays private.
+            {session.other_name ? `${session.other_name} has joined` : "They've joined"}
+            {session.invited_as && session.other_name && session.invited_as.toLowerCase() !== session.other_name.toLowerCase()
+              ? ` (you invited ${session.invited_as})`
+              : ""}
+            . Their chat stays private.
           </p>
         ) : null}
       </header>
@@ -531,10 +544,12 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
           <div className="mb-2.5 flex items-center justify-between gap-3 px-1 text-xs">
             <span className="text-muted">
               {!session?.other_joined
-                ? "They haven't joined yet"
+                ? session?.other_name
+                  ? `${session.other_name} hasn't joined yet`
+                  : "They haven't joined yet"
                 : otherReady
-                  ? "The other person has shared their side"
-                  : "The other person is still talking"}
+                  ? `${session?.other_name ?? "The other person"} has shared their side`
+                  : `${session?.other_name ?? "The other person"} is still talking`}
             </span>
             <button
               type="button"

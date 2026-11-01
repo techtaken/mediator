@@ -41,6 +41,7 @@ from app.auth import (
     require_logged_in,
     resolve_actor,
 )
+from app.names import INVITED_NAME_DETAIL, NAME_DETAIL, NAME_REQUIRED_DETAIL, clean_name
 from app.pin import WEAK_PIN_DETAIL, hash_access_token, hash_pin, new_access_token, verify_pin, weak_pin
 from app.ratelimit import limit_messages, limit_session_creation, limit_writes
 from app.retention import delete_party_data, delete_room
@@ -50,12 +51,15 @@ from app.db import get_supabase
 from app.safety import HELP_MESSAGE, HELPLINES, PAUSED_FOR_OTHER_MESSAGE, is_crisis_or_severe_harm, with_helplines
 from app.schemas import (
     ApproveShareBody,
+    ClaimBody,
     CreateSessionBody,
     DeletedOut,
     LanguageBody,
     JointSummaryOut,
     MessageOut,
+    NameBody,
     PinBody,
+    ProfileOut,
     ReadyBody,
     RoomAccessOut,
     RoomSummaryOut,
@@ -114,37 +118,41 @@ def welcome_a(topic: str | None, language: str | None = None) -> str:
     )
 
 
-def welcome_b(topic: str | None, language: str | None = None) -> str:
+def welcome_b(topic: str | None, language: str | None = None, inviter: str | None = None) -> str:
     if language == "hinglish":
+        who = f"{inviter} ne" if inviter else "Unhone"
         about = (
-            f'Unhone yeh room is baare mein khola: "{topic}". Yeh unka nazariya hai. Yahan aap apni baat rakh sakte hain.\n\n'
+            f'{who} yeh room is baare mein khola: "{topic}". Yeh unka nazariya hai. Yahan aap apni baat rakh sakte hain.\n\n'
             if topic
-            else "Unhone yeh room aapke saath baat karne ke liye khola hai. Yahan aap apni baat rakh sakte hain.\n\n"
+            else f"{who} yeh room aapke saath baat karne ke liye khola hai. Yahan aap apni baat rakh sakte hain.\n\n"
         )
-        return (
-            "Yeh aapka private room hai. Jinhone aapko invite kiya, woh ise padh nahi sakte.\n\n"
-            f"{about}{AI_DISCLOSURE_BY_LANGUAGE['hinglish']}"
-        )
+        cant_read = f"{inviter} ise padh nahi sakte." if inviter else "Jinhone aapko invite kiya, woh ise padh nahi sakte."
+        return f"Yeh aapka private room hai. {cant_read}\n\n{about}{AI_DISCLOSURE_BY_LANGUAGE['hinglish']}"
     if language == "hi":
+        who = f"{inviter} ने" if inviter else "उन्होंने"
         about = (
-            f'उन्होंने यह कमरा इस बारे में खोला: "{topic}"। यह उनका नज़रिया है। यहाँ आप अपनी बात रख सकते हैं।\n\n'
+            f'{who} यह कमरा इस बारे में खोला: "{topic}"। यह उनका नज़रिया है। यहाँ आप अपनी बात रख सकते हैं।\n\n'
             if topic
-            else "उन्होंने यह कमरा आपसे बात करने के लिए खोला है। यहाँ आप अपनी बात रख सकते हैं।\n\n"
+            else f"{who} यह कमरा आपसे बात करने के लिए खोला है। यहाँ आप अपनी बात रख सकते हैं।\n\n"
         )
-        return f"यह आपका निजी कमरा है। जिन्होंने आपको बुलाया है, वे इसे नहीं पढ़ सकते।\n\n{about}{AI_DISCLOSURE_BY_LANGUAGE['hi']}"
+        cant_read = f"{inviter} इसे नहीं पढ़ सकते।" if inviter else "जिन्होंने आपको बुलाया है, वे इसे नहीं पढ़ सकते।"
+        return f"यह आपका निजी कमरा है। {cant_read}\n\n{about}{AI_DISCLOSURE_BY_LANGUAGE['hi']}"
+    who = inviter or "They"
     about = (
-        f'They opened this room about: "{topic}". That\'s how they see it. Here you can tell your side.\n\n'
+        f'{who} opened this room about: "{topic}". That\'s how they see it. Here you can tell your side.\n\n'
         if topic
-        else "They opened this room to talk something through with you. Here you can tell your side.\n\n"
+        else f"{who} opened this room to talk something through with you. Here you can tell your side.\n\n"
     )
-    return (
-        "This is your private room. The person who invited you can't read it.\n\n"
-        f"{about}{AI_DISCLOSURE}"
-    )
+    cant_read = f"{inviter} can't read it." if inviter else "The person who invited you can't read it."
+    return f"This is your private room. {cant_read}\n\n{about}{AI_DISCLOSURE}"
 
 
 def language_field(party_role: str) -> str:
     return "language_a" if party_role == "user_a" else "language_b"
+
+
+def name_field(party_role: str) -> str:
+    return "name_a" if party_role == "user_a" else "name_b"
 
 
 def get_actor(
@@ -217,6 +225,10 @@ def _session_out(session: dict, actor: Actor) -> SessionOut:
         other_joined=_other_joined(session) if actor.party == "user_a" else True,
         invite_expired=expired,
         needs_pin=actor.limited,
+        my_name=session.get(name_field(actor.party)),
+        other_name=(session.get("name_b") or session.get("invited_as")) if actor.party == "user_a" else session.get("name_a"),
+        # Person B sees it only before joining, to tell if the invite is theirs.
+        invited_as=session.get("invited_as") if actor.party == "user_a" or actor.limited else None,
         retention_days=get_settings().retention_days,
         my_data_deleted=bool(session.get(_deleted_field(actor.party))),
         my_language=session.get(language_field(actor.party)),
@@ -415,12 +427,20 @@ def _maybe_build_summary(session: dict) -> bool:
 @router.post("/sessions", response_model=SessionOut)
 def create_session(body: CreateSessionBody, user_id: str = Depends(require_logged_in)):
     limit_session_creation(user_id)
+    name = _profile_name(user_id)
+    if not name:
+        raise HTTPException(status_code=409, detail=NAME_REQUIRED_DETAIL)
+    invited_as = clean_name(body.invited_name)
+    if not invited_as:
+        raise HTTPException(status_code=400, detail=INVITED_NAME_DETAIL)
     supabase = get_supabase()
     inserted = (
         supabase.table("sessions")
         .insert(
             {
                 "created_by": user_id,
+                "name_a": name,
+                "invited_as": invited_as,
                 "topic": body.topic.strip(),
                 "relationship_context": body.relationship_context.strip() or None,
                 "status": "intake",
@@ -464,7 +484,7 @@ def get_session(ctx: tuple[dict, Actor] = Depends(get_entry_actor)):
                 session["id"],
                 "ai",
                 "user_b",
-                welcome_b(session.get("topic")),
+                welcome_b(session.get("topic"), inviter=session.get("name_a")),
             )
     return _session_out(session, actor)
 
@@ -687,13 +707,36 @@ def build_joint(background: BackgroundTasks, ctx: tuple[dict, Actor] = Depends(g
     return _session_out(load_session(session["id"]), actor)
 
 
+def _profile_name(user_id: str) -> str | None:
+    rows = get_supabase().table("profiles").select("name").eq("user_id", user_id).limit(1).execute().data
+    return rows[0]["name"] if rows else None
+
+
+@router.get("/me", response_model=ProfileOut)
+def my_profile(user_id: str = Depends(require_logged_in)):
+    return ProfileOut(name=_profile_name(user_id))
+
+
+@router.put("/me", response_model=ProfileOut)
+def save_my_name(body: NameBody, user_id: str = Depends(require_logged_in)):
+    """Their name on future rooms, and on open ones so a typo can be fixed."""
+    name = clean_name(body.name)
+    if not name:
+        raise HTTPException(status_code=400, detail=NAME_DETAIL)
+    limit_writes("profile", user_id)
+    supabase = get_supabase()
+    supabase.table("profiles").upsert({"user_id": user_id, "name": name, "updated_at": now_iso()}, on_conflict="user_id").execute()
+    supabase.table("sessions").update({"name_a": name}).eq("created_by", user_id).in_("status", list(STOPPABLE)).execute()
+    return ProfileOut(name=name)
+
+
 @router.get("/sessions", response_model=list[RoomSummaryOut])
 def my_rooms(user_id: str = Depends(require_logged_in)):
     """Rooms the signed-in person opened, newest first."""
     rows = (
         get_supabase()
         .table("sessions")
-        .select("id, status, topic, created_at, user_a_ready, user_b_ready, consented_b_at, invite_expires_at")
+        .select("id, status, topic, created_at, user_a_ready, user_b_ready, consented_b_at, invite_expires_at, name_b, invited_as")
         .eq("created_by", user_id)
         .order("created_at", desc=True)
         .limit(50)
@@ -711,6 +754,7 @@ def my_rooms(user_id: str = Depends(require_logged_in)):
             user_b_ready=row["user_b_ready"],
             other_joined=_other_joined(row),
             invite_expired=invite_expired(row),
+            other_name=row.get("name_b") or row.get("invited_as"),
         )
         for row in rows
     ]
@@ -738,10 +782,10 @@ def _issue_room_access(session_id: str) -> RoomAccessOut:
 
 
 @router.post("/sessions/{session_id}/claim", response_model=RoomAccessOut)
-def claim_room(body: PinBody, ctx: tuple[dict, Actor] = Depends(get_entry_actor)):
-    """The first person through the invite link accepts how Mediator works and
-    chooses a PIN. From then on the link alone opens nothing, so the person who
-    sent it can't read this person's private chat."""
+def claim_room(body: ClaimBody, ctx: tuple[dict, Actor] = Depends(get_entry_actor)):
+    """The first person through the invite link accepts how Mediator works, gives
+    their name and chooses a PIN. From then on the link alone opens nothing, so
+    the person who sent it can't read this person's private chat."""
     session, actor = ctx
     sid = session["id"]
     if actor.party != "user_b":
@@ -750,6 +794,9 @@ def claim_room(body: PinBody, ctx: tuple[dict, Actor] = Depends(get_entry_actor)
         raise HTTPException(status_code=409, detail="You've already chosen a PIN.")
     if session["status"] == "halted" and not _other_joined(session):
         raise HTTPException(status_code=409, detail=HALTED_DETAIL)
+    name = clean_name(body.name)
+    if not name:
+        raise HTTPException(status_code=400, detail=NAME_DETAIL)
     if weak_pin(body.pin):
         raise HTTPException(status_code=400, detail=WEAK_PIN_DETAIL)
     limit_writes(sid, actor.party)
@@ -761,6 +808,7 @@ def claim_room(body: PinBody, ctx: tuple[dict, Actor] = Depends(get_entry_actor)
             {
                 "b_pin_hash": hash_pin(body.pin),
                 "b_pin_set_at": now_iso(),
+                "name_b": name,
                 "consented_b_at": session.get("consented_b_at") or now_iso(),
             }
         )
@@ -934,6 +982,7 @@ def rotate_invite(ctx: tuple[dict, Actor] = Depends(get_actor)):
             "b_pin_failed_attempts": 0,
             "b_pin_locked_until": None,
             "consented_b_at": None,
+            "name_b": None,
             "language_b": None,
             "data_deleted_b_at": None,
         }
@@ -967,7 +1016,7 @@ def delete_my_data(ctx: tuple[dict, Actor] = Depends(get_actor)):
     if session["status"] in STOPPABLE:
         _halt(sid, actor.party, "withdrawn")
     delete_party_data(sid, actor.party, keep_approved_share=shared_already)
-    update = {_deleted_field(actor.party): now_iso()}
+    update = {_deleted_field(actor.party): now_iso(), name_field(actor.party): None, "invited_as": None}
     if not shared_already:
         update["user_a_ready" if actor.party == "user_a" else "user_b_ready"] = False
     get_supabase().table("sessions").update(update).eq("id", sid).execute()
@@ -1011,10 +1060,12 @@ def set_language(body: LanguageBody, ctx: tuple[dict, Actor] = Depends(get_entry
         or []
     )
     if rows and not any(row["sender_role"] == actor.party for row in rows) and rows[0]["sender_role"] == "ai":
-        welcome = welcome_a if actor.party == "user_a" else welcome_b
-        supabase.table("messages").update({"content": welcome(session.get("topic"), body.language)}).eq(
-            "id", rows[0]["id"]
-        ).execute()
+        content = (
+            welcome_a(session.get("topic"), body.language)
+            if actor.party == "user_a"
+            else welcome_b(session.get("topic"), body.language, session.get("name_a"))
+        )
+        supabase.table("messages").update({"content": content}).eq("id", rows[0]["id"]).execute()
     return _session_out(load_session(sid), actor)
 
 

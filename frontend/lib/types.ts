@@ -21,6 +21,9 @@ export type Session = {
   other_joined: boolean;
   invite_expired: boolean;
   needs_pin: boolean;
+  my_name: string | null;
+  other_name: string | null;
+  invited_as: string | null;
   retention_days: number;
   my_data_deleted: boolean;
   my_language: Language | null;
@@ -37,6 +40,7 @@ export type RoomSummary = {
   user_b_ready: boolean;
   other_joined: boolean;
   invite_expired: boolean;
+  other_name: string | null;
 };
 
 export type ShareDraft = {

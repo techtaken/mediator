@@ -15,6 +15,10 @@ class CreateSessionBody(BaseModel):
         max_length=300,
         description="What this is about, in the opener's words. Shown to the other person as written.",
     )
+    invited_name: str = Field(
+        max_length=200,
+        description="What the opener calls the person they're inviting. Used until that person gives their own name.",
+    )
     relationship_context: str = Field(
         default="",
         max_length=500,
@@ -47,6 +51,9 @@ class SessionOut(BaseModel):
     other_joined: bool = True
     invite_expired: bool = False
     needs_pin: bool = False
+    my_name: str | None = None
+    other_name: str | None = None
+    invited_as: str | None = None
     # Rooms are removed this many days after they open (0: kept until deleted).
     retention_days: int = 0
     my_data_deleted: bool = False
@@ -60,6 +67,18 @@ class DeletedOut(BaseModel):
 
 class PinBody(BaseModel):
     pin: str = Field(pattern=r"^[0-9]{6}$")
+
+
+class ClaimBody(PinBody):
+    name: str = Field(max_length=200)
+
+
+class NameBody(BaseModel):
+    name: str = Field(max_length=200)
+
+
+class ProfileOut(BaseModel):
+    name: str | None = None
 
 
 class RoomAccessOut(BaseModel):
@@ -76,6 +95,7 @@ class RoomSummaryOut(BaseModel):
     user_b_ready: bool
     other_joined: bool = False
     invite_expired: bool = False
+    other_name: str | None = None
 
 
 class MessageOut(BaseModel):

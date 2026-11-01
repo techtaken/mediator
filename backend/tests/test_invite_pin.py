@@ -53,7 +53,7 @@ def _open_room(db, **overrides):
 
 
 def _claim(pin: str = PIN) -> dict[str, str]:
-    response = client.post(f"{ROOM}/claim", json={"pin": pin}, headers=LINK)
+    response = client.post(f"{ROOM}/claim", json={"pin": pin, "name": "Priya"}, headers=LINK)
     assert response.status_code == 200, response.text
     return {"X-Room-Access": response.json()["access_token"]}
 
@@ -96,14 +96,14 @@ def test_the_link_alone_can_do_nothing_else(db, method, path, body):
 
 def test_an_expired_unused_link_cannot_be_claimed(db):
     db.add_session(topic="x", invite_expires_at=_iso(-1))
-    assert client.post(f"{ROOM}/claim", json={"pin": PIN}, headers=LINK).status_code == 410
+    assert client.post(f"{ROOM}/claim", json={"pin": PIN, "name": "Priya"}, headers=LINK).status_code == 410
 
 
 def test_a_stopped_room_cannot_be_claimed_or_tell_the_link_holder_why(db):
     _open_room(db, status="halted", halted_for="user_a", halt_kind="safety", halted_reason="safety")
     data = client.get(ROOM, headers=LINK).json()
     assert data["halt_view"] == "other" and data["halted_reason"] is None and data["helplines"] == []
-    assert client.post(f"{ROOM}/claim", json={"pin": PIN}, headers=LINK).status_code == 409
+    assert client.post(f"{ROOM}/claim", json={"pin": PIN, "name": "Priya"}, headers=LINK).status_code == 409
 
 
 # --- Choosing a PIN -----------------------------------------------------------------
@@ -123,7 +123,7 @@ def test_claiming_records_consent_and_stores_only_a_hash(db):
 @pytest.mark.parametrize("pin", ["123456", "654321", "111111", "121212", "123123", "150892", "081592", "920815", "567890"])
 def test_easy_pins_are_refused(db, pin):
     _open_room(db)
-    response = client.post(f"{ROOM}/claim", json={"pin": pin}, headers=LINK)
+    response = client.post(f"{ROOM}/claim", json={"pin": pin, "name": "Priya"}, headers=LINK)
     assert response.status_code == 400 and "too easy" in response.json()["detail"]
     assert db.rows("sessions")[0].get("b_pin_hash") is None
 
@@ -131,7 +131,7 @@ def test_easy_pins_are_refused(db, pin):
 @pytest.mark.parametrize("pin", ["12345", "1234567", "abcdef", "12 456", "٣٤٥٦٧٨"])
 def test_only_six_plain_digits_are_a_pin(db, pin):
     _open_room(db)
-    assert client.post(f"{ROOM}/claim", json={"pin": pin}, headers=LINK).status_code == 422
+    assert client.post(f"{ROOM}/claim", json={"pin": pin, "name": "Priya"}, headers=LINK).status_code == 422
 
 
 def test_weak_pin_lets_ordinary_pins_through():
@@ -142,7 +142,7 @@ def test_only_the_first_person_gets_the_room(db):
     row = _open_room(db)
     _claim()
     first_hash = row["b_pin_hash"]
-    response = client.post(f"{ROOM}/claim", json={"pin": "840375"}, headers=LINK)
+    response = client.post(f"{ROOM}/claim", json={"pin": "840375", "name": "Priya"}, headers=LINK)
     assert response.status_code == 423
     assert row["b_pin_hash"] == first_hash
 
@@ -157,7 +157,7 @@ def test_a_claim_that_loses_the_race_gets_nothing(db):
         return before, sessions_module.Actor("user_b", invite_token="token_xyz", limited=True)
 
     with patch.object(sessions_module, "resolve_actor", first_claim_lands):
-        response = client.post(f"{ROOM}/claim", json={"pin": "840375"}, headers=LINK)
+        response = client.post(f"{ROOM}/claim", json={"pin": "840375", "name": "Priya"}, headers=LINK)
     assert response.status_code == 423
     assert verify_pin(PIN, row["b_pin_hash"])
     assert db.rows("room_access_tokens") == []
@@ -203,7 +203,7 @@ def test_person_a_stays_person_a_and_cannot_claim_with_the_link(db):
     with patch("app.auth._decode_user", return_value="user_123"):
         headers = {"Authorization": "Bearer a", **LINK}
         assert client.get(ROOM, headers=headers).json()["party"] == "user_a"
-        assert client.post(f"{ROOM}/claim", json={"pin": PIN}, headers=headers).status_code == 403
+        assert client.post(f"{ROOM}/claim", json={"pin": PIN, "name": "Priya"}, headers=headers).status_code == 403
     assert db.rows("sessions")[0].get("b_pin_hash") is None
 
 
@@ -356,7 +356,7 @@ def test_reset_deletes_their_side_and_gives_a_an_empty_new_link(db):
     # The new link starts clean, and whoever uses it finds nothing of theirs.
     new_link = {"X-Invite-Token": new_token}
     assert client.get(ROOM, headers=new_link).json()["needs_pin"] is True
-    claimed = client.post(f"{ROOM}/claim", json={"pin": "840375"}, headers=new_link)
+    claimed = client.post(f"{ROOM}/claim", json={"pin": "840375", "name": "Priya"}, headers=new_link)
     messages = client.get(f"{ROOM}/messages", headers={"X-Room-Access": claimed.json()["access_token"]})
     assert "secret" not in messages.text
 

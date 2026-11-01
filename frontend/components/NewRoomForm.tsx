@@ -7,6 +7,7 @@ import { createSession } from "@/lib/api";
 /** Start a new room: the topic line the other person will see, plus optional context. */
 export function NewRoomForm({ accessToken }: { accessToken: string }) {
   const router = useRouter();
+  const [invitedName, setInvitedName] = useState("");
   const [topic, setTopic] = useState("");
   const [context, setContext] = useState("");
   const [error, setError] = useState("");
@@ -17,7 +18,7 @@ export function NewRoomForm({ accessToken }: { accessToken: string }) {
     setBusy(true);
     setError("");
     try {
-      const session = await createSession(topic.trim(), context, accessToken);
+      const session = await createSession(topic.trim(), invitedName, context, accessToken);
       router.push(`/room/${session.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start a room");
@@ -27,6 +28,21 @@ export function NewRoomForm({ accessToken }: { accessToken: string }) {
 
   return (
     <form onSubmit={onCreate} className="space-y-4">
+      <label className="block text-sm text-muted">
+        Who are you inviting?
+        <span className="mt-1 block text-xs">
+          They&apos;ll see this, and the mediator will use it. Use the name you&apos;d call them.
+        </span>
+        <input
+          value={invitedName}
+          onChange={(e) => setInvitedName(e.target.value)}
+          required
+          maxLength={40}
+          autoComplete="off"
+          placeholder="e.g. Priya or Bhaiya"
+          className="mt-2 w-full rounded-2xl border border-ink/10 bg-card px-4 py-3 text-base text-ink outline-none focus:border-terracotta"
+        />
+      </label>
       <label className="block text-sm text-muted">
         What is this about?
         <span className="mt-1 block text-xs">
@@ -59,7 +75,7 @@ export function NewRoomForm({ accessToken }: { accessToken: string }) {
       {error ? <p className="text-sm text-terracotta">{error}</p> : null}
       <button
         type="submit"
-        disabled={busy || topic.trim().length < 3}
+        disabled={busy || !invitedName.trim() || topic.trim().length < 3}
         className="w-full rounded-full bg-teal px-5 py-3.5 text-base text-card disabled:opacity-60"
       >
         {busy ? "Opening room…" : "Start a session"}

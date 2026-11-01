@@ -4,13 +4,14 @@ type Props = {
   shared: string;
   otherReady: boolean;
   otherJoined: boolean;
+  otherName: string | null;
   busy: boolean;
   onWithdraw: () => void;
   onRetry: () => void;
 };
 
 /** Shown after this person has shared, until the joint view opens. */
-export function WaitingPanel({ shared, otherReady, otherJoined, busy, onWithdraw, onRetry }: Props) {
+export function WaitingPanel({ shared, otherReady, otherJoined, otherName, busy, onWithdraw, onRetry }: Props) {
   return (
     <section className="flex-1 overflow-y-auto px-4 py-6">
       <div className="flex items-center gap-2 text-sm text-teal" aria-live="polite">
@@ -18,7 +19,11 @@ export function WaitingPanel({ shared, otherReady, otherJoined, busy, onWithdraw
           <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-teal/50" />
           <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-teal" />
         </span>
-        {otherReady ? "You've both shared" : otherJoined ? "Waiting for the other person to finish" : "They haven't joined yet"}
+        {otherReady ? "You've both shared" : otherJoined
+              ? `Waiting for ${otherName ?? "the other person"} to finish`
+              : otherName
+                ? `${otherName} hasn't joined yet`
+                : "They haven't joined yet"}
       </div>
 
       <h1 className="mt-4 font-[family-name:var(--font-display)] text-3xl leading-tight text-ink">

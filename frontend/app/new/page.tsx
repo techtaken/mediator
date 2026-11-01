@@ -3,14 +3,17 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { NameForm } from "@/components/NameForm";
 import { NewRoomForm } from "@/components/NewRoomForm";
 import { RoomList, isOpenRoom, useMyRooms } from "@/components/YourRooms";
 import { useAuth } from "@/lib/useAuth";
+import { useProfile } from "@/lib/useProfile";
 
 export default function NewRoomPage() {
   const router = useRouter();
   const { accessToken, loading } = useAuth();
   const rooms = useMyRooms(accessToken);
+  const profile = useProfile(accessToken);
   const [startAnyway, setStartAnyway] = useState(false);
 
   useEffect(() => {
@@ -32,11 +35,17 @@ export default function NewRoomPage() {
         </Link>
       </header>
 
-      <h1 className="mt-10 font-[family-name:var(--font-display)] text-3xl text-ink">Start a new conversation</h1>
+      {!profile.loading && accessToken && !profile.name && !profile.failed ? (
+        <div className="mt-10">
+          <NameForm onSave={profile.save} />
+        </div>
+      ) : (
+        <h1 className="mt-10 font-[family-name:var(--font-display)] text-3xl text-ink">Start a new conversation</h1>
+      )}
 
-      {loading || !accessToken || rooms === null ? (
+      {loading || !accessToken || rooms === null || profile.loading ? (
         <div className="mt-8 h-40 animate-pulse rounded-3xl bg-ink/[0.06]" aria-label="Loading" />
-      ) : askFirst ? (
+      ) : !profile.name && !profile.failed ? null : askFirst ? (
         <section className="mt-6">
           <p className="text-[15px] leading-relaxed text-muted">
             {openRooms.length === 1

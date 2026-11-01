@@ -101,11 +101,23 @@ export async function request<T>(
 
 export type AuthOpts = { accessToken?: string | null; inviteToken?: string | null; roomAccess?: string | null };
 
-export function createSession(topic: string, context: string, accessToken: string) {
+export function createSession(topic: string, invitedName: string, context: string, accessToken: string) {
   return request<Session>("/api/sessions", {
     method: "POST",
     accessToken,
-    body: JSON.stringify({ topic, relationship_context: context }),
+    body: JSON.stringify({ topic, invited_name: invitedName, relationship_context: context }),
+  });
+}
+
+export function fetchMyProfile(accessToken: string) {
+  return request<{ name: string | null }>("/api/me", { accessToken });
+}
+
+export function saveMyName(name: string, accessToken: string) {
+  return request<{ name: string | null }>("/api/me", {
+    method: "PUT",
+    accessToken,
+    body: JSON.stringify({ name }),
   });
 }
 
@@ -113,11 +125,11 @@ export function fetchMyRooms(accessToken: string) {
   return request<RoomSummary[]>("/api/sessions", { accessToken });
 }
 
-/** The invited person accepts how Mediator works and chooses their PIN. */
-export function claimRoom(id: string, pin: string, auth: AuthOpts) {
+/** The invited person accepts how Mediator works, gives their name and chooses their PIN. */
+export function claimRoom(id: string, pin: string, name: string, auth: AuthOpts) {
   return request<RoomAccess>(`/api/sessions/${id}/claim`, {
     method: "POST",
-    body: JSON.stringify({ pin }),
+    body: JSON.stringify({ pin, name }),
     ...auth,
   });
 }
