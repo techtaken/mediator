@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import contextvars
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, TypeVar
 
 from app.agents.llm import AgentCaller, call_agent, dumps
 from app.agents.prompts import (
@@ -61,6 +63,34 @@ class TurnResult:
     private: dict[str, Any] | None = None
     agent: str = "CAUCUS"
     extras: dict[str, Any] = field(default_factory=dict)
+
+
+T = TypeVar("T")
+U = TypeVar("U")
+
+# Agent calls that don't need each other's results run side by side. Each runs
+# in a copy of the request's context, so call stats still land on the right room.
+_POOL = ThreadPoolExecutor(max_workers=16, thread_name_prefix="agent-call")
+
+
+def _side_by_side(first: Callable[[], T], second: Callable[[], U]) -> tuple[T, U]:
+    """Run `first` on a worker while `second` runs here. Both must handle their own errors."""
+    pending = _POOL.submit(contextvars.copy_context().run, first)
+    second_result = second()
+    return pending.result(), second_result
+
+
+# What a clean safety check reports. The orchestrator starts with this while the
+# real check runs; anything else from the check means it's asked again.
+ASSUMED_CLEAN_SAFETY: dict[str, Any] = {
+    "flag": False,
+    "severity": 0,
+    "categories": [],
+    "evidence": "",
+    "action": "CONTINUE",
+    "message_to_affected_party": None,
+    "block_outgoing_message": False,
+}
 
 
 def _safety_unavailable() -> dict[str, Any]:
@@ -147,16 +177,27 @@ def handle_party_turn(
         return TurnResult(reply=HELP_MESSAGE, halt=True, halt_kind="safety", state=state, agent="SAFETY_GUARDIAN")
 
     view = party_view(state, party)
-    try:
-        safety = caller(
-            "SAFETY_GUARDIAN",
-            {
-                "SHARED_STATE_JSON": dumps(view),
-                "LATEST_EVENT": dumps({"party": party, "message": message, "direction": "inbound"}),
-            },
-        )
-    except Exception:
-        logger.exception("inbound safety check failed; continuing with care")
+
+    def check_message() -> dict[str, Any] | None:
+        try:
+            return caller(
+                "SAFETY_GUARDIAN",
+                {
+                    "SHARED_STATE_JSON": dumps(view),
+                    "LATEST_EVENT": dumps({"party": party, "message": message, "direction": "inbound"}),
+                },
+            )
+        except Exception:
+            logger.exception("inbound safety check failed; continuing with care")
+            return None
+
+    # Almost every message is fine, so the orchestrator starts at the same time,
+    # as if the check came back clean. If it didn't, the orchestrator is asked
+    # again with the real report, so flagged turns are handled as before.
+    safety, early_plan = _side_by_side(
+        check_message, lambda: _ask_orchestrator(view, party, message, ASSUMED_CLEAN_SAFETY, caller)
+    )
+    if safety is None:
         safety = _safety_unavailable()
         append_audit(state, {"stage": state.get("stage"), "agent": "SAFETY_GUARDIAN", "reason": "inbound check unavailable"})
 
@@ -169,7 +210,8 @@ def handle_party_turn(
     elif note_clean_turn(state, party):
         append_audit(state, {"stage": state.get("stage"), "agent": "SAFETY_GUARDIAN", "reason": "hold lifted after clean turns"})
 
-    plan = _plan_turn(state, party, message, safety, caller)
+    raw_plan = early_plan if severity == 0 else _ask_orchestrator(view, party, message, safety, caller)
+    plan = _apply_plan(state, party, raw_plan)
     next_agent = plan["next_agent"]
 
     if next_agent in HANDOFF_AGENTS or plan.get("stage") in {"HALT_AND_REFER", "REFER_TO_HUMAN"}:
@@ -226,14 +268,30 @@ def handle_party_turn(
     )
 
 
-def _plan_turn(
-    state: dict[str, Any],
+def _ask_orchestrator(
+    view: dict[str, Any],
     party: PartyKey,
     message: str,
     safety: dict[str, Any],
     caller: AgentCaller,
 ) -> dict[str, Any]:
-    """Ask the orchestrator where this private turn goes.
+    """Ask the orchestrator where this private turn goes. Changes nothing."""
+    try:
+        return caller(
+            "ORCHESTRATOR",
+            {
+                "SHARED_STATE_JSON": dumps(view),
+                "LATEST_EVENT": dumps({"party": party, "message": message}),
+                "SAFETY_REPORT": dumps(safety),
+            },
+        )
+    except Exception:
+        logger.exception("orchestrator failed; defaulting to caucus")
+        return _default_plan(party)
+
+
+def _apply_plan(state: dict[str, Any], party: PartyKey, plan: dict[str, Any]) -> dict[str, Any]:
+    """Accept the orchestrator's plan within what a private turn allows.
 
     During private intake the only agents allowed are the speaking party's own
     caucus and the human handoff. Internal agents (diagnosis, options, ...) wait
@@ -241,19 +299,6 @@ def _plan_turn(
     one party's private turn would carry that party's words to the other side.
     """
     allowed = {f"CAUCUS_{party}"} | HANDOFF_AGENTS
-    try:
-        plan = caller(
-            "ORCHESTRATOR",
-            {
-                "SHARED_STATE_JSON": dumps(party_view(state, party)),
-                "LATEST_EVENT": dumps({"party": party, "message": message}),
-                "SAFETY_REPORT": dumps(safety),
-            },
-        )
-    except Exception:
-        logger.exception("orchestrator failed; defaulting to caucus")
-        plan = _default_plan(party)
-
     requested = str(plan.get("next_agent") or "")
     next_agent = requested if requested in allowed else f"CAUCUS_{party}"
     plan["next_agent"] = next_agent
@@ -462,7 +507,28 @@ def _guard_outgoing(
         draft = "I am here. Tell me what matters most."
 
     view = view if view is not None else shared_view(state)
-    blocked, feedback = _check_outbound(draft, state, recipient, caller, view)
+
+    def audit_neutrality(text: str) -> dict[str, Any] | None:
+        try:
+            return caller(
+                "NEUTRALITY_AUDITOR",
+                {
+                    "DRAFT": text,
+                    "MODE": str(plan.get("mode") or "private"),
+                    "RECIPIENT": recipient,
+                    "APPROVED_SHARES": dumps(view.get("approved_shares") or {}),
+                    "BALANCE_STATS": dumps(view.get("signals") or {}),
+                },
+            )
+        except Exception:
+            logger.exception("neutrality auditor failed")
+            return None
+
+    def check(text: str) -> tuple[tuple[bool | None, str], dict[str, Any] | None]:
+        # Both read the same draft and neither needs the other, so they run together.
+        return _side_by_side(lambda: _check_outbound(text, state, recipient, caller, view), lambda: audit_neutrality(text))
+
+    (blocked, feedback), audit = check(draft)
     if blocked and regenerate is not None:
         try:
             retry = regenerate(feedback).strip()
@@ -471,25 +537,13 @@ def _guard_outgoing(
             retry = ""
         if retry:
             draft = retry
-            blocked, feedback = _check_outbound(draft, state, recipient, caller, view)
+            (blocked, feedback), audit = check(draft)
     if blocked:
         append_audit(state, {"stage": state.get("stage"), "agent": "SAFETY_GUARDIAN", "reason": f"outbound blocked: {feedback}"})
         return NEUTRAL_FALLBACK
     safety_ran = blocked is not None
 
-    try:
-        audit = caller(
-            "NEUTRALITY_AUDITOR",
-            {
-                "DRAFT": draft,
-                "MODE": str(plan.get("mode") or "private"),
-                "RECIPIENT": recipient,
-                "APPROVED_SHARES": dumps(view.get("approved_shares") or {}),
-                "BALANCE_STATS": dumps(view.get("signals") or {}),
-            },
-        )
-    except Exception:
-        logger.exception("neutrality auditor failed")
+    if audit is None:
         if not safety_ran:
             append_audit(state, {"stage": state.get("stage"), "agent": "NEUTRALITY_AUDITOR", "reason": "no outbound check available"})
             return NEUTRAL_FALLBACK
