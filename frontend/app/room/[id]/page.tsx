@@ -9,6 +9,7 @@ import { HaltPanel } from "@/components/room/HaltPanel";
 import { JointView } from "@/components/room/JointView";
 import { ChoosePin, EnterPin } from "@/components/room/PinScreens";
 import { RoomMenu, type RoomAction } from "@/components/room/RoomMenu";
+import { SaveToChats } from "@/components/room/SaveToChats";
 import { ShareReview } from "@/components/room/ShareReview";
 import { Steps } from "@/components/room/Steps";
 import { WaitingPanel } from "@/components/room/WaitingPanel";
@@ -28,9 +29,11 @@ import {
   getInviteToken,
   getRoomAccess,
   leaveSession,
+  removeFromMyChats,
   retryJoint,
   rotateInvite,
   saveRoomAccess,
+  saveToMyChats,
   sendMessage,
   setLanguage,
   unlockRoom,
@@ -90,7 +93,7 @@ function currentStep(session: Session | null, reviewing: boolean): 0 | 1 | 2 | 3
 export default function RoomPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router = useRouter();
-  const { accessToken, loading: authLoading } = useAuth();
+  const { accessToken, loading: authLoading, user } = useAuth();
   // Invite tokens live in sessionStorage, so read them only on the client.
   const onClient = useSyncExternalStore(noopSubscribe, () => true, () => false);
   const inviteToken = onClient ? getInviteToken(id) : null;
@@ -268,6 +271,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
       if (action === "leave") return leaveSession(id, auth);
       if (action === "human") return askForPerson(id, auth);
       if (action === "reset_invite") return rotateInvite(id, auth);
+      if (action === "unsave") return removeFromMyChats(id, auth);
       return deleteMyData(id, auth);
     });
   }
@@ -313,7 +317,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
   if (pinGate) {
     return (
       <main className="mx-auto max-w-lg">
-        <EnterPin onEnter={enterPin} />
+        <EnterPin onEnter={enterPin} fromChats={!auth.inviteToken && Boolean(auth.accessToken)} />
       </main>
     );
   }
@@ -431,6 +435,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
                 canStop={canStop}
                 isA={isA}
                 canResetInvite={isA && session.other_joined && session.status === "intake" && !session.user_b_ready}
+                canUnsave={Boolean(session.saved_to)}
                 language={session.my_language}
                 onLanguage={(language) => run(() => setLanguage(id, language, auth))}
                 onAction={onMenu}
@@ -535,6 +540,16 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
         <p role="alert" className="mx-4 mt-3 rounded-2xl bg-terracotta/10 px-3 py-2 text-sm text-terracotta">
           {error}
         </p>
+      ) : null}
+
+      {session ? (
+        <SaveToChats
+          session={session}
+          signedInEmail={user?.email ?? null}
+          onSave={async () => {
+            setSession(await saveToMyChats(id, auth));
+          }}
+        />
       ) : null}
 
       {body}

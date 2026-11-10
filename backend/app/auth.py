@@ -21,12 +21,15 @@ class Actor:
         user_id: str | None = None,
         invite_token: str | None = None,
         limited: bool = False,
+        signed_in_as: str | None = None,
     ):
         self.party = party
         self.user_id = user_id
         self.invite_token = invite_token
         # Holds an unused invite link but hasn't chosen a PIN yet.
         self.limited = limited
+        # Person B's account, if they're signed in. Only used for saving the room.
+        self.signed_in_as = signed_in_as
 
 
 @lru_cache
@@ -58,6 +61,10 @@ def _decode_claims(authorization: str | None) -> dict | None:
 def _decode_user(authorization: str | None) -> str | None:
     claims = _decode_claims(authorization)
     return claims["sub"] if claims else None
+
+
+def signed_in_user(authorization: str | None) -> str | None:
+    return _decode_user(authorization) if authorization else None
 
 
 def require_logged_in(
@@ -111,7 +118,11 @@ def resolve_actor(
         return session, Actor("user_a", user_id=user_id)
 
     if x_room_access and has_room_access(session_id, x_room_access):
-        return session, Actor("user_b")
+        return session, Actor("user_b", signed_in_as=user_id)
+
+    # Saved to this account: the account stands in for the link. The PIN is still needed.
+    if user_id and session.get("user_b_id") == user_id:
+        raise HTTPException(status_code=423, detail=PIN_REQUIRED_DETAIL)
 
     if invite_matches(session, x_invite_token):
         # Person A has this link too, so once a PIN is set it opens nothing.
@@ -121,7 +132,7 @@ def resolve_actor(
             raise HTTPException(status_code=410, detail=INVITE_EXPIRED_DETAIL)
         if not allow_limited:
             raise HTTPException(status_code=403, detail=CHOOSE_PIN_DETAIL)
-        return session, Actor("user_b", invite_token=x_invite_token, limited=True)
+        return session, Actor("user_b", invite_token=x_invite_token, limited=True, signed_in_as=user_id)
 
     raise HTTPException(status_code=403, detail="You cannot access this dispute room")
 

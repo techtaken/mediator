@@ -24,6 +24,7 @@ export type Session = {
   my_name: string | null;
   other_name: string | null;
   invited_as: string | null;
+  saved_to: "you" | "another account" | null;
   retention_days: number;
   my_data_deleted: boolean;
   my_language: Language | null;
@@ -41,6 +42,7 @@ export type RoomSummary = {
   other_joined: boolean;
   invite_expired: boolean;
   other_name: string | null;
+  role: "opened" | "invited";
 };
 
 export type ShareDraft = {

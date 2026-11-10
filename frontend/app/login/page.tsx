@@ -1,12 +1,26 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { FormEvent, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { FormEvent, Suspense, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 
+/** Only a path on this site, so a crafted link can't send people elsewhere after signing in. */
+function safeNext(value: string | null) {
+  return value && value.startsWith("/") && !value.startsWith("//") && !value.startsWith("/\\") ? value : null;
+}
+
 export default function LoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <LoginInner />
+    </Suspense>
+  );
+}
+
+function LoginInner() {
   const router = useRouter();
+  const next = safeNext(useSearchParams().get("next"));
   const [email, setEmail] = useState("");
   const [otp, setOtp] = useState("");
   const [sent, setSent] = useState(false);
@@ -43,7 +57,7 @@ export default function LoginPage() {
       setError(verifyError.message);
       return;
     }
-    router.push("/");
+    router.push(next ?? "/");
     router.refresh();
   }
 
@@ -56,8 +70,9 @@ export default function LoginPage() {
         Sign in with email
       </h1>
       <p className="mt-3 text-muted">
-        We send a one-time code. Person A needs this to open a room. Person B can join from the
-        invite link without an account.
+        {next
+          ? "We send a one-time code. Then you'll go straight back to your conversation to save it."
+          : "We send a one-time code. Person A needs this to open a room. Person B can join from the invite link without an account."}
       </p>
 
       {!sent ? (

@@ -111,7 +111,7 @@ export function ChoosePin({ inviter, invitedAs, onChoose }: ChoosePinProps) {
 }
 
 /** Coming back, or anyone else holding the link. Shows nothing about the room. */
-export function EnterPin({ onEnter }: { onEnter: (pin: string) => Promise<void> }) {
+export function EnterPin({ onEnter, fromChats = false }: { onEnter: (pin: string) => Promise<void>; fromChats?: boolean }) {
   const [pin, setPin] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -134,7 +134,9 @@ export function EnterPin({ onEnter }: { onEnter: (pin: string) => Promise<void> 
     <section className="px-5 py-16">
       <h1 className="font-[family-name:var(--font-display)] text-3xl leading-tight text-ink">Enter your PIN</h1>
       <p className="mt-3 text-[15px] leading-relaxed text-muted">
-        This invite has already been used. If this is your room, enter the PIN you chose when you joined.
+        {fromChats
+          ? "Enter the PIN you chose when you joined this conversation."
+          : "This invite has already been used. If this is your room, enter the PIN you chose when you joined."}
       </p>
       <form onSubmit={submit} className="mt-6 space-y-4">
         <PinField label="Your PIN" value={pin} onChange={setPin} autoFocus autoComplete="off" />

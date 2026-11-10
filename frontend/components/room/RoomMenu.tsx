@@ -4,7 +4,7 @@ import { useState } from "react";
 import { LanguagePicker } from "@/components/room/LanguagePicker";
 import type { Language } from "@/lib/types";
 
-export type RoomAction = "human" | "leave" | "delete_mine" | "delete_room" | "reset_invite";
+export type RoomAction = "human" | "leave" | "delete_mine" | "delete_room" | "reset_invite" | "unsave";
 
 const COPY: Record<RoomAction, { title: string; body: string; confirm: string; danger: boolean }> = {
   human: {
@@ -25,6 +25,12 @@ const COPY: Record<RoomAction, { title: string; body: string; confirm: string; d
     confirm: "Delete my data",
     danger: true,
   },
+  unsave: {
+    title: "Remove from your chats?",
+    body: "This room won't be listed in the account it's saved to any more. You can still open it with your invite link and PIN.",
+    confirm: "Remove from chats",
+    danger: false,
+  },
   reset_invite: {
     title: "Reset the invite?",
     body: "Use this if the wrong person opened your link, or they've forgotten their PIN. Everything on their side is permanently deleted, and you won't see any of it. You'll get a new link to send, and the old one stops working.",
@@ -43,6 +49,7 @@ type Props = {
   canStop: boolean;
   isA: boolean;
   canResetInvite: boolean;
+  canUnsave: boolean;
   language: Language | null;
   onLanguage: (language: Language) => Promise<void>;
   onAction: (action: RoomAction) => Promise<void>;
@@ -62,7 +69,7 @@ function Option({ label, hint, danger, onClick }: { label: string; hint: string;
 }
 
 /** Options to stop or delete at any time: voluntary participation is a hard rule. */
-export function RoomMenu({ canStop, isA, canResetInvite, language, onLanguage, onAction }: Props) {
+export function RoomMenu({ canStop, isA, canResetInvite, canUnsave, language, onLanguage, onAction }: Props) {
   const [open, setOpen] = useState(false);
   const [confirming, setConfirming] = useState<RoomAction | null>(null);
   const [typed, setTyped] = useState("");
@@ -179,6 +186,13 @@ export function RoomMenu({ canStop, isA, canResetInvite, language, onLanguage, o
                     danger
                     onClick={() => setConfirming("delete_mine")}
                   />
+                  {canUnsave ? (
+                    <Option
+                      label="Remove from my chats"
+                      hint="Saved to the wrong account? Unlink it here"
+                      onClick={() => setConfirming("unsave")}
+                    />
+                  ) : null}
                   {canResetInvite ? (
                     <Option
                       label="Reset the invite"

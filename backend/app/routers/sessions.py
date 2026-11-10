@@ -40,6 +40,7 @@ from app.auth import (
     parse_time,
     require_logged_in,
     resolve_actor,
+    signed_in_user,
 )
 from app.names import INVITED_NAME_DETAIL, NAME_DETAIL, NAME_REQUIRED_DETAIL, clean_name
 from app.pin import WEAK_PIN_DETAIL, hash_access_token, hash_pin, new_access_token, verify_pin, weak_pin
@@ -74,6 +75,7 @@ router = APIRouter(prefix="/api")
 
 HALTED_DETAIL = "This room has been paused."
 INVITE_RESET_DETAIL = "This link no longer works. Ask the person who invited you for a new one."
+SAVED_ELSEWHERE_DETAIL = "This conversation is already saved to another account."
 NOT_YET_READY_DETAIL = "Let's keep talking privately a little longer before the joint session."
 APPROVE_FIRST_DETAIL = "Review and approve what you'd like to share first."
 ALREADY_SHARED_DETAIL = "You've already shared. Withdraw it first to make changes."
@@ -229,10 +231,18 @@ def _session_out(session: dict, actor: Actor) -> SessionOut:
         other_name=(session.get("name_b") or session.get("invited_as")) if actor.party == "user_a" else session.get("name_a"),
         # Person B sees it only before joining, to tell if the invite is theirs.
         invited_as=session.get("invited_as") if actor.party == "user_a" or actor.limited else None,
+        saved_to=_saved_to(session, actor),
         retention_days=get_settings().retention_days,
         my_data_deleted=bool(session.get(_deleted_field(actor.party))),
         my_language=session.get(language_field(actor.party)),
     )
+
+
+def _saved_to(session: dict, actor: Actor) -> str | None:
+    saved_by = session.get("user_b_id")
+    if actor.party != "user_b" or actor.limited or not saved_by:
+        return None
+    return "you" if saved_by == actor.signed_in_as else "another account"
 
 
 def _deleted_field(party_role: str) -> str:
@@ -732,32 +742,35 @@ def save_my_name(body: NameBody, user_id: str = Depends(require_logged_in)):
 
 @router.get("/sessions", response_model=list[RoomSummaryOut])
 def my_rooms(user_id: str = Depends(require_logged_in)):
-    """Rooms the signed-in person opened, newest first."""
-    rows = (
-        get_supabase()
-        .table("sessions")
-        .select("id, status, topic, created_at, user_a_ready, user_b_ready, consented_b_at, invite_expires_at, name_b, invited_as")
-        .eq("created_by", user_id)
-        .order("created_at", desc=True)
-        .limit(50)
-        .execute()
-        .data
-        or []
+    """Rooms the signed-in person opened, and rooms they were invited to and saved, newest first."""
+    columns = (
+        "id, status, topic, created_at, created_by, user_a_ready, user_b_ready, consented_b_at, "
+        "invite_expires_at, name_a, name_b, invited_as"
     )
-    return [
-        RoomSummaryOut(
-            id=row["id"],
-            status=row["status"],
-            topic=row.get("topic"),
-            created_at=row["created_at"],
-            user_a_ready=row["user_a_ready"],
-            user_b_ready=row["user_b_ready"],
-            other_joined=_other_joined(row),
-            invite_expired=invite_expired(row),
-            other_name=row.get("name_b") or row.get("invited_as"),
+
+    def rooms_where(column: str) -> list[dict]:
+        query = get_supabase().table("sessions").select(columns).eq(column, user_id)
+        return query.order("created_at", desc=True).limit(50).execute().data or []
+
+    rows = sorted([*rooms_where("created_by"), *rooms_where("user_b_id")], key=lambda row: row["created_at"], reverse=True)
+    summaries = []
+    for row in rows[:50]:
+        opened = row.get("created_by") == user_id
+        summaries.append(
+            RoomSummaryOut(
+                id=row["id"],
+                status=row["status"],
+                topic=row.get("topic"),
+                created_at=row["created_at"],
+                user_a_ready=row["user_a_ready"],
+                user_b_ready=row["user_b_ready"],
+                other_joined=_other_joined(row) if opened else True,
+                invite_expired=invite_expired(row) if opened else False,
+                other_name=(row.get("name_b") or row.get("invited_as")) if opened else row.get("name_a"),
+                role="opened" if opened else "invited",
+            )
         )
-        for row in rows
-    ]
+    return summaries
 
 
 @router.post("/sessions/{session_id}/consent", response_model=SessionOut)
@@ -860,11 +873,14 @@ def _count_pin_attempt(session: dict) -> int:
 def unlock_room(
     session_id: str,
     body: PinBody,
+    authorization: Annotated[str | None, Header()] = None,
     x_invite_token: Annotated[str | None, Header()] = None,
 ):
-    """Link + PIN: a short-lived token that opens the invited person's room."""
+    """Link + PIN, or the account it's saved to + PIN: a short-lived token that
+    opens the invited person's room."""
     session = load_session(session_id)
-    if not invite_matches(session, x_invite_token):
+    saved_by = session.get("user_b_id")
+    if not invite_matches(session, x_invite_token) and not (saved_by and signed_in_user(authorization) == saved_by):
         raise HTTPException(status_code=403, detail=INVITE_RESET_DETAIL)
     stored = session.get("b_pin_hash")
     if not stored:
@@ -882,6 +898,49 @@ def unlock_room(
         "id", session_id
     ).execute()
     return _issue_room_access(session_id)
+
+
+@router.post("/sessions/{session_id}/save", response_model=SessionOut)
+def save_to_my_chats(ctx: tuple[dict, Actor] = Depends(get_actor)):
+    """Person B keeps this room in their account's chats. Asked, never automatic.
+    The PIN is still needed to open it; the account only replaces the link."""
+    session, actor = ctx
+    sid = session["id"]
+    if actor.party != "user_b":
+        raise HTTPException(status_code=403, detail="Only the invited person can save this room.")
+    if not actor.signed_in_as:
+        raise HTTPException(status_code=401, detail="Sign in first to save this conversation.")
+    saved_by = session.get("user_b_id")
+    if saved_by and saved_by != actor.signed_in_as:
+        raise HTTPException(status_code=409, detail=SAVED_ELSEWHERE_DETAIL)
+    if not saved_by:
+        limit_writes(sid, actor.party)
+        claimed = (
+            get_supabase()
+            .table("sessions")
+            .update({"user_b_id": actor.signed_in_as, "b_saved_at": now_iso()})
+            .eq("id", sid)
+            .is_("user_b_id", "null")
+            .execute()
+        )
+        if not claimed.data:
+            raise HTTPException(status_code=409, detail=SAVED_ELSEWHERE_DETAIL)
+        # A new account takes the name they already gave in this room.
+        if session.get("name_b") and not _profile_name(actor.signed_in_as):
+            get_supabase().table("profiles").upsert(
+                {"user_id": actor.signed_in_as, "name": session["name_b"], "updated_at": now_iso()}, on_conflict="user_id"
+            ).execute()
+    return _session_out(load_session(sid), actor)
+
+
+@router.delete("/sessions/{session_id}/save", response_model=SessionOut)
+def remove_from_my_chats(ctx: tuple[dict, Actor] = Depends(get_actor)):
+    """The room stays open with the link and PIN; it's just no longer in an account."""
+    session, actor = ctx
+    if actor.party != "user_b":
+        raise HTTPException(status_code=403, detail="Only the invited person can change this.")
+    get_supabase().table("sessions").update({"user_b_id": None, "b_saved_at": None}).eq("id", session["id"]).execute()
+    return _session_out(load_session(session["id"]), actor)
 
 
 STOPPABLE = ("intake", "building_joint", "joint_review")
@@ -983,6 +1042,8 @@ def rotate_invite(ctx: tuple[dict, Actor] = Depends(get_actor)):
             "b_pin_locked_until": None,
             "consented_b_at": None,
             "name_b": None,
+            "user_b_id": None,
+            "b_saved_at": None,
             "language_b": None,
             "data_deleted_b_at": None,
         }
@@ -1017,6 +1078,8 @@ def delete_my_data(ctx: tuple[dict, Actor] = Depends(get_actor)):
         _halt(sid, actor.party, "withdrawn")
     delete_party_data(sid, actor.party, keep_approved_share=shared_already)
     update = {_deleted_field(actor.party): now_iso(), name_field(actor.party): None, "invited_as": None}
+    if actor.party == "user_b":
+        update.update(user_b_id=None, b_saved_at=None)
     if not shared_already:
         update["user_a_ready" if actor.party == "user_a" else "user_b_ready"] = False
     get_supabase().table("sessions").update(update).eq("id", sid).execute()

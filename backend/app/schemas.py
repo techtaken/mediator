@@ -54,6 +54,8 @@ class SessionOut(BaseModel):
     my_name: str | None = None
     other_name: str | None = None
     invited_as: str | None = None
+    # Person B only: whether this room is saved to an account.
+    saved_to: Literal["you", "another account"] | None = None
     # Rooms are removed this many days after they open (0: kept until deleted).
     retention_days: int = 0
     my_data_deleted: bool = False
@@ -96,6 +98,8 @@ class RoomSummaryOut(BaseModel):
     other_joined: bool = False
     invite_expired: bool = False
     other_name: str | None = None
+    # "invited": a room Person B saved to their account.
+    role: Literal["opened", "invited"] = "opened"
 
 
 class MessageOut(BaseModel):

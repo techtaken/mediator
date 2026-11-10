@@ -44,15 +44,19 @@ function statusOf(room: RoomSummary): { label: string; tone: string } {
       return { label: "Joint session", tone: "bg-teal/10 text-teal" };
     case "building_joint":
       return { label: "Preparing joint view", tone: "bg-teal/10 text-teal" };
-    default:
+    default: {
+      const invited = room.role === "invited";
+      const mineReady = invited ? room.user_b_ready : room.user_a_ready;
+      const theirsReady = invited ? room.user_a_ready : room.user_b_ready;
       if (room.invite_expired) return { label: "Invite link expired", tone: "bg-terracotta/10 text-terracotta" };
       if (!room.other_joined) {
         return { label: `Waiting for ${room.other_name ?? "them"} to join`, tone: "bg-ink/[0.06] text-muted" };
       }
-      if (room.user_a_ready && !room.user_b_ready) {
+      if (mineReady && !theirsReady) {
         return { label: `Waiting for ${room.other_name ?? "them"}`, tone: "bg-ink/[0.06] text-muted" };
       }
       return { label: "Talking privately", tone: "bg-terracotta/10 text-terracotta" };
+    }
   }
 }
 
@@ -74,7 +78,12 @@ export function RoomList({ rooms }: { rooms: RoomSummary[] }) {
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-[15px] text-ink">{room.topic ?? "Untitled room"}</span>
                 <span className="mt-0.5 block text-xs text-muted">
-                  {room.other_name ? `With ${room.other_name} · ` : ""}Opened {when(room.created_at)}
+                  {room.role === "invited"
+                    ? `Invited by ${room.other_name ?? "someone"} · `
+                    : room.other_name
+                      ? `With ${room.other_name} · `
+                      : ""}
+                  Opened {when(room.created_at)}
                 </span>
               </span>
               <span className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-medium ${status.tone}`}>

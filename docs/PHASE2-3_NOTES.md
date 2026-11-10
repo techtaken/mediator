@@ -173,3 +173,13 @@ Both people give a name, and each sees the other's.
 - **Removal:** deleting a room removes both copies. Resetting the invite removes B's. "Delete my data" removes that person's from the room. A's profile name stays, as there's no "delete my account" yet.
 - Rooms from before this change have no names, and the screens say "They" or "The other person" instead.
 
+## Follow-up: Person B can save a room to their account
+
+Joining still needs no account. Once inside, B sees "Keep this conversation in your chats?". Signed out, it offers "Sign in to save" and returns to the room afterwards (`/login?next=`). Signed in, it shows the account's email and asks first, because a shared browser may be signed in as someone else. Saving is never automatic.
+
+- `POST /sessions/{id}/save` sets `sessions.user_b_id`. It needs B's PIN access and a sign-in, and only the first account wins. `DELETE` removes it; B can do that from Options, which fixes a save to the wrong account.
+- A saved room shows in that account's "Your rooms" as "Invited by nk". On any device, that account + PIN opens it (`/unlock` accepts the account in place of the link). The PIN is never skipped: being signed in lasts for weeks on a phone others can pick up.
+- If B's new account has no profile name yet, it takes the name B gave in the room.
+- Person A is never told whether B has an account or saved the room.
+- Resetting the invite or B's "Delete my data" removes the save. Deleting the room removes everything.
+

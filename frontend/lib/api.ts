@@ -271,6 +271,15 @@ export function reopenJoint(id: string, auth: AuthOpts) {
   return request<JointState>(`/api/sessions/${id}/reopen`, { method: "POST", ...auth });
 }
 
+/** Person B keeps this room in their signed-in account's chats. */
+export function saveToMyChats(id: string, auth: AuthOpts) {
+  return request<Session>(`/api/sessions/${id}/save`, { method: "POST", ...auth });
+}
+
+export function removeFromMyChats(id: string, auth: AuthOpts) {
+  return request<Session>(`/api/sessions/${id}/save`, { method: "DELETE", ...auth });
+}
+
 /** Person A replaces the invite link. Anything already on the other side is deleted. */
 export function rotateInvite(id: string, auth: AuthOpts) {
   return request<Session>(`/api/sessions/${id}/invite/rotate`, { method: "POST", ...auth });

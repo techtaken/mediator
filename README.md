@@ -39,6 +39,7 @@ When a room halts, only the party who triggered it sees why, with helplines. The
    - `010_invite_pin.sql`: the invited person's PIN and the short-lived access tokens it unlocks
    - `011_names.sql`: Person A's profile name, and each room's two names
    - `012_invited_name.sql`: what Person A calls the person they're inviting
+   - `013_saved_rooms.sql`: Person B can save a room to their account
 4. Copy keys from **Project Settings → API**:
    - Project URL
    - Publishable key (`sb_publishable_…`) for the browser

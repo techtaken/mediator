@@ -20,7 +20,8 @@ export default function NewRoomPage() {
     if (!loading && !accessToken) router.replace("/login");
   }, [loading, accessToken, router]);
 
-  const openRooms = Array.isArray(rooms) ? rooms.filter(isOpenRoom) : [];
+  // Only rooms they opened: a room they were invited to doesn't send anyone a second invite.
+  const openRooms = Array.isArray(rooms) ? rooms.filter((room) => room.role === "opened" && isOpenRoom(room)) : [];
   // A second room about the same fight sends the other person a second invite; check first.
   const askFirst = openRooms.length > 0 && !startAnyway;
 

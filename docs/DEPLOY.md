@@ -5,7 +5,7 @@ that need your accounts.
 
 | Part | Where | Config |
 |---|---|---|
-| Database + auth | Supabase | `supabase/migrations/001…012` |
+| Database + auth | Supabase | `supabase/migrations/001…013` |
 | API (FastAPI) | Render (Docker) | `render.yaml`, `backend/Dockerfile` |
 | Scheduled jobs | Render cron (or any scheduler) | `render.yaml` |
 | Web app (Next.js) | Vercel | notes below |
