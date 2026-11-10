@@ -101,13 +101,14 @@ class FakeAgents:
         return [call for call in self.calls if call["role"] == role]
 
 
-def _turn(agents, party="A", message="I want my money back.", state=None, private=None):
+def _turn(agents, party="A", message="I want my money back.", state=None, private=None, use_orchestrator=False):
     return handle_party_turn(
         party=party,
         message=message,
         state=state if state is not None else new_shared_state("D-1"),
         private=private if private is not None else empty_private(),
         caller=agents,
+        use_orchestrator=use_orchestrator,
     )
 
 
@@ -201,7 +202,7 @@ def test_shared_view_strips_private_and_safety_keys():
 def test_orchestrator_cannot_route_a_message_away_from_the_speaker(routed_to):
     agents = FakeAgents(ORCHESTRATOR={"stage": "STORYTELLING", "next_agent": routed_to, "reason": "x"})
     state = new_shared_state("D-1")
-    result = _turn(agents, state=state, private={"notes": A_SECRET})
+    result = _turn(agents, state=state, private={"notes": A_SECRET}, use_orchestrator=True)
     caucus = agents.of("CAUCUS")
     assert len(caucus) == 1
     assert caucus[0]["mapping"]["PARTY_ID"] == "A"
@@ -215,7 +216,7 @@ def test_orchestrator_cannot_route_a_message_away_from_the_speaker(routed_to):
 
 def test_internal_agents_are_not_run_during_intake():
     agents = FakeAgents(ORCHESTRATOR={"stage": "DIAGNOSIS", "next_agent": "DIAGNOSTICIAN"})
-    result = _turn(agents)
+    result = _turn(agents, use_orchestrator=True)
     assert "DIAGNOSTICIAN" not in agents.roles()
     assert result.agent == "CAUCUS_A"
     assert result.state["issues"] == []
@@ -223,7 +224,7 @@ def test_internal_agents_are_not_run_during_intake():
 
 def test_unknown_stage_label_is_not_stored():
     agents = FakeAgents(ORCHESTRATOR={"stage": "A_IS_HURT_ABOUT_THE_TRIP", "next_agent": "CAUCUS_A"})
-    assert _turn(agents).state["stage"] == "STORYTELLING"
+    assert _turn(agents, use_orchestrator=True).state["stage"] == "STORYTELLING"
 
 
 TRIP = "B went on the Goa trip without me"
@@ -254,20 +255,22 @@ def _echoing_agents():
     )
 
 
-def test_nothing_a_said_reaches_any_of_b_agents():
-    first = _turn(_echoing_agents(), message=f"{TRIP}, and didn't even tell me.")
+@pytest.mark.parametrize("use_orchestrator", [False, True])
+def test_nothing_a_said_reaches_any_of_b_agents(use_orchestrator):
+    first = _turn(_echoing_agents(), message=f"{TRIP}, and didn't even tell me.", use_orchestrator=use_orchestrator)
     b_agents = FakeAgents()
-    _turn(b_agents, party="B", message="hi", state=first.state, private=empty_private())
+    _turn(b_agents, party="B", message="hi", state=first.state, private=empty_private(), use_orchestrator=use_orchestrator)
     assert b_agents.calls
     for call in b_agents.calls:
         assert TRIP not in call["prompt"], f"A's words leaked into B's {call['role']}"
 
 
 def test_nothing_a_said_reaches_b_through_a_handoff():
-    first = _turn(_echoing_agents(), message=TRIP)
+    first = _turn(_echoing_agents(), message=TRIP, use_orchestrator=True)
     first.state["handoff"] = {"dispute_summary": TRIP, "message_to_parties": TRIP}
     b_agents = FakeAgents(ORCHESTRATOR={"stage": "REFER_TO_HUMAN", "next_agent": "HANDOFF", "reason": "B asked"})
-    _turn(b_agents, party="B", message="can I talk to a human?", state=first.state, private=empty_private())
+    _turn(b_agents, party="B", message="can I talk to a human?", state=first.state, private=empty_private(), use_orchestrator=True)
+    assert "HANDOFF" in b_agents.roles()
     for call in b_agents.calls:
         assert TRIP not in call["prompt"], f"A's words leaked into B's {call['role']}"
 
@@ -313,7 +316,8 @@ def test_safety_call_failure_continues_with_care():
     agents = FakeAgents(SAFETY_GUARDIAN=RuntimeError("api down"))
     result = _turn(agents)
     assert result.halt is False
-    assert "Go gently" in agents.of("CAUCUS")[0]["mapping"]["INSTRUCTION"]
+    # The reply started early is set aside; the one sent was written with care.
+    assert "Go gently" in agents.of("CAUCUS")[-1]["mapping"]["INSTRUCTION"]
     assert result.state["safety"]["flags"]["A"]["severity"] == 1
     # The auditor still checked the outbound draft, so it can go out.
     assert result.reply.startswith("It sounds like trust matters")
@@ -354,7 +358,7 @@ def test_moderate_flag_does_not_halt_and_stays_private():
     agents = FakeAgents(SAFETY_GUARDIAN={"flag": True, "severity": 2, "action": "PAUSE_AND_CHECK"})
     result = _turn(agents)
     assert result.halt is False
-    assert "Pause the move toward a joint session" in agents.of("CAUCUS")[0]["mapping"]["INSTRUCTION"]
+    assert "Pause the move toward a joint session" in agents.of("CAUCUS")[-1]["mapping"]["INSTRUCTION"]
     assert joint_blocked_by(result.state) == ["A"]
     assert "safety" not in shared_view(result.state)
 

@@ -89,6 +89,7 @@ To run the live evals in CI, add a `GEMINI_API_KEY` repository secret and start 
 | `PIN_ACCESS_TTL_MINUTES` | no | 120 | How long a correct PIN opens the invited person's room |
 | `PIN_MAX_ATTEMPTS` | no | 5 | Wrong PINs before entry locks |
 | `PIN_LOCK_MINUTES` | no | 15 | How long entry stays locked |
+| `PRIVATE_ORCHESTRATOR` | no | false | Ask the orchestrator model in private chat (adds a call per reply) |
 | `RETENTION_DAYS` | no | 180 | Rooms older than this are removed (0 = never) |
 | `AUDIT_REASON_RETENTION_DAYS` | no | 30 | Free-text audit reasoning cleared after this |
 | `JOB_TOKEN` | yes for cron | empty | Secret for `/api/jobs/*` |

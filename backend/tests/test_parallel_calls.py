@@ -8,15 +8,22 @@ import json
 import threading
 import time
 
+import pytest
+
 from app.agents import telemetry
 from app.agents.pipeline import ASSUMED_CLEAN_SAFETY, NEUTRAL_FALLBACK, _side_by_side, handle_party_turn
 from app.agents.state import empty_private, new_shared_state
 from tests.test_pipeline import SAFE, FakeAgents
 
 
-def _turn(agents, message="He keeps teasing me in front of family"):
+def _turn(agents, message="He keeps teasing me in front of family", use_orchestrator=False, state=None):
     return handle_party_turn(
-        party="A", message=message, state=new_shared_state("D-1"), private=empty_private(), caller=agents
+        party="A",
+        message=message,
+        state=state if state is not None else new_shared_state("D-1"),
+        private=empty_private(),
+        caller=agents,
+        use_orchestrator=use_orchestrator,
     )
 
 
@@ -45,7 +52,7 @@ def test_the_message_check_and_the_orchestrator_run_at_the_same_time():
         return agents.default("ORCHESTRATOR", mapping)
 
     agents.overrides.update(SAFETY_GUARDIAN=safety, ORCHESTRATOR=orchestrator)
-    result = _turn(agents)
+    result = _turn(agents, use_orchestrator=True)
     # Had they run one after another, both would have failed and been treated with care.
     assert len(agents.of("ORCHESTRATOR")) == 1
     assert not any(entry.get("reason") == "inbound check unavailable" for entry in result.state["audit_log"])
@@ -71,7 +78,7 @@ def test_the_two_checks_on_a_reply_run_at_the_same_time():
 
 
 def test_a_reply_waits_about_as_long_as_its_slowest_pair_not_their_sum():
-    """Five calls of 0.2s each: about 0.6s side by side, 1s one after another."""
+    """Four calls of 0.2s each: about 0.4s side by side, 0.8s one after another."""
     agents = FakeAgents()
 
     def slow(role):
@@ -84,7 +91,109 @@ def test_a_reply_waits_about_as_long_as_its_slowest_pair_not_their_sum():
     agents.overrides.update({role: slow(role) for role in ("SAFETY_GUARDIAN", "ORCHESTRATOR", "CAUCUS", "NEUTRALITY_AUDITOR")})
     started = time.monotonic()
     _turn(agents)
-    assert time.monotonic() - started < 0.85
+    assert time.monotonic() - started < 0.65
+    assert agents.of("ORCHESTRATOR") == []
+
+
+def test_the_message_check_and_the_reply_run_at_the_same_time():
+    both = _meeting_point()
+    agents = FakeAgents()
+
+    def safety(mapping):
+        if _direction(mapping) == "inbound":
+            both.wait()
+        return dict(SAFE)
+
+    def caucus(mapping):
+        both.wait()
+        return agents.default("CAUCUS", mapping)
+
+    agents.overrides.update(SAFETY_GUARDIAN=safety, CAUCUS=caucus)
+    result = _turn(agents)
+    # Had they run one after another, both would have failed: a fallback reply, with care.
+    assert result.reply.startswith("It sounds like trust matters")
+    assert len(agents.of("CAUCUS")) == 1
+
+
+# --- Without the orchestrator -------------------------------------------------------
+
+
+def test_private_chat_skips_the_orchestrator_by_default():
+    agents = FakeAgents()
+    result = handle_party_turn(party="A", message="hi", state=new_shared_state("D-1"), private=empty_private(), caller=agents)
+    assert agents.of("ORCHESTRATOR") == []
+    assert result.state["stage"] == "STORYTELLING" and result.agent == "CAUCUS_A"
+    assert "Listen, reflect interests" in agents.of("CAUCUS")[0]["mapping"]["INSTRUCTION"]
+
+
+def test_a_flagged_message_gets_a_fresh_reply_written_with_care():
+    flagged = {"flag": True, "severity": 2, "action": "PAUSE_AND_CHECK", "categories": ["threat"], "block_outgoing_message": False}
+    agents = FakeAgents()
+
+    def caucus(mapping):
+        reply = agents.default("CAUCUS", mapping)
+        reply["reply_to_party"] = "Careful reply." if "Pause the move" in mapping["INSTRUCTION"] else "Early reply."
+        return reply
+
+    agents.overrides.update(
+        SAFETY_GUARDIAN=lambda mapping: dict(flagged) if _direction(mapping) == "inbound" else dict(SAFE), CAUCUS=caucus
+    )
+    result = _turn(agents)
+    assert result.reply == "Careful reply."
+    assert len(agents.of("CAUCUS")) == 2
+
+
+def test_a_failed_message_check_also_gets_a_reply_written_with_care():
+    def safety(mapping):
+        if _direction(mapping) == "inbound":
+            raise RuntimeError("check down")
+        return dict(SAFE)
+
+    agents = FakeAgents(SAFETY_GUARDIAN=safety)
+    result = _turn(agents)
+    assert "Go gently" in agents.of("CAUCUS")[-1]["mapping"]["INSTRUCTION"]
+    assert result.state["safety"]["flags"]["A"]["severity"] == 1
+
+
+def _state_where_a(**signals):
+    state = new_shared_state("D-1")
+    state["parties"]["A"].update(signals)
+    return state
+
+
+def test_very_strong_feelings_slow_the_reply_down():
+    agents = FakeAgents()
+    result = _turn(agents, state=_state_where_a(intensity=9))
+    assert result.state["stage"] == "DE_ESCALATE"
+    assert "offer a pause" in agents.of("CAUCUS")[0]["mapping"]["INSTRUCTION"]
+
+
+def test_someone_unsure_about_going_on_is_checked_on():
+    agents = FakeAgents()
+    result = _turn(agents, state=_state_where_a(willing=False))
+    assert result.state["stage"] == "BUILD_READINESS"
+    assert "stopping is fine" in agents.of("CAUCUS")[0]["mapping"]["INSTRUCTION"]
+
+
+def test_only_the_speaker_feelings_set_the_pace_of_their_own_chat():
+    state = new_shared_state("D-1")
+    state["parties"]["B"]["intensity"] = 9
+    assert _turn(FakeAgents(), state=state).state["stage"] == "STORYTELLING"
+
+
+def test_a_badly_escalated_room_goes_to_a_person_without_a_reply_attempt():
+    state = new_shared_state("D-1")
+    state["escalation_stage"] = 7
+    agents = FakeAgents()
+    result = _turn(agents, state=state)
+    assert "HANDOFF" in agents.roles() and agents.of("CAUCUS") == []
+    assert result.reply == "A human mediator would help here."
+
+
+def test_the_mediator_knows_to_point_to_talk_to_a_person():
+    agents = FakeAgents()
+    _turn(agents, message="Can I talk to a real person?")
+    assert 'choose "Talk to a' in agents.of("CAUCUS")[0]["prompt"]
 
 
 # --- Behaving as before -------------------------------------------------------------
@@ -92,7 +201,7 @@ def test_a_reply_waits_about_as_long_as_its_slowest_pair_not_their_sum():
 
 def test_a_clean_message_asks_the_orchestrator_once():
     agents = FakeAgents()
-    _turn(agents)
+    _turn(agents, use_orchestrator=True)
     (call,) = agents.of("ORCHESTRATOR")
     assert json.loads(call["mapping"]["SAFETY_REPORT"]) == ASSUMED_CLEAN_SAFETY
 
@@ -102,7 +211,7 @@ def test_a_flagged_message_asks_the_orchestrator_again_with_the_real_report():
     agents = FakeAgents(
         SAFETY_GUARDIAN=lambda mapping: dict(flagged) if _direction(mapping) == "inbound" else dict(SAFE)
     )
-    _turn(agents)
+    _turn(agents, use_orchestrator=True)
     calls = agents.of("ORCHESTRATOR")
     assert len(calls) == 2
     assert "PAUSE_AND_CHECK" not in calls[0]["mapping"]["SAFETY_REPORT"]
@@ -116,20 +225,24 @@ def test_a_failed_message_check_also_asks_again_with_care():
         return dict(SAFE)
 
     agents = FakeAgents(SAFETY_GUARDIAN=safety)
-    result = _turn(agents)
+    result = _turn(agents, use_orchestrator=True)
     calls = agents.of("ORCHESTRATOR")
     assert len(calls) == 2 and "safety_check_unavailable" in calls[1]["mapping"]["SAFETY_REPORT"]
     assert any(entry.get("reason") == "inbound check unavailable" for entry in result.state["audit_log"])
 
 
-def test_a_halt_still_stops_the_turn_and_never_reaches_the_mediator():
+@pytest.mark.parametrize("use_orchestrator", [False, True])
+def test_a_halt_still_stops_the_turn_and_no_mediator_reply_goes_out(use_orchestrator):
     halt = {"flag": True, "severity": 3, "action": "HALT_AND_REFER", "categories": ["self_harm"],
             "message_to_affected_party": "Please reach out now.", "block_outgoing_message": True}
     agents = FakeAgents(SAFETY_GUARDIAN=lambda mapping: dict(halt) if _direction(mapping) == "inbound" else dict(SAFE))
-    result = _turn(agents)
+    result = _turn(agents, use_orchestrator=use_orchestrator)
     assert result.halt and result.halt_kind == "safety"
-    assert len(agents.of("ORCHESTRATOR")) <= 1
-    assert agents.of("CAUCUS") == []
+    assert result.reply.startswith("Please reach out now.")
+    # A reply may have been started early, but nothing from it is sent or kept.
+    assert result.private is None
+    assert result.state["parties"]["A"]["intensity"] == 5
+    assert agents.of("NEUTRALITY_AUDITOR") == []
 
 
 def test_a_rewritten_reply_is_checked_again_in_full():
@@ -185,3 +298,25 @@ def test_call_stats_from_both_sides_are_kept_for_the_room():
             lambda: telemetry.record(telemetry.CallRecord(role="ORCHESTRATOR", ok=True, attempts=1, latency_ms=5)),
         )
     assert sorted(entry.role for entry in bucket) == ["ORCHESTRATOR", "SAFETY_GUARDIAN"]
+
+
+def test_calls_starting_together_share_one_client():
+    """Two clients built at once used to close one another's connection."""
+    from unittest.mock import patch
+
+    import app.gemini_client as gemini_client
+
+    built = []
+
+    def slow_client(**_kwargs):
+        time.sleep(0.05)
+        built.append(object())
+        return built[-1]
+
+    gemini_client._build_client.cache_clear()
+    try:
+        with patch.object(gemini_client.genai, "Client", side_effect=slow_client):
+            first, second = _side_by_side(gemini_client.get_client, gemini_client.get_client)
+        assert first is second and len(built) == 1
+    finally:
+        gemini_client._build_client.cache_clear()

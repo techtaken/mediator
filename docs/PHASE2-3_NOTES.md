@@ -183,3 +183,14 @@ Joining still needs no account. Once inside, B sees "Keep this conversation in y
 - Person A is never told whether B has an account or saved the room.
 - Resetting the invite or B's "Delete my data" removes the save. Deleting the room removes everything.
 
+## Follow-up: faster private replies
+
+Measured in the run-through: each private reply made five model calls one after another (safety check on the message, orchestrator, mediator reply, safety check on the reply, neutrality check), about 30s on a slow day and 15s on a normal one.
+
+- **Checks run side by side.** The two checks on a reply read the same draft, so they run together.
+- **No orchestrator in private chat** (`PRIVATE_ORCHESTRATOR=false`, the default). Its private-chat rules now run in code from the room's signals: intensity 8+ → slow down and offer a pause (DE_ESCALATE); not willing → check gently whether to go on (BUILD_READINESS); escalation 7+ → hand off to a person; otherwise listen and reflect (STORYTELLING). Only the speaker's own signals count. Asking for a person: the mediator points to Options → "Talk to a person", which pauses the room and flags it. What's lost is the orchestrator's one-line, per-turn tip to the mediator.
+- **The reply starts while the message is checked**, as if the check is clean. If it flags anything or fails, that early reply is thrown away (never sent or saved) and a fresh one is written with the care note. A safety stop still stops the turn.
+- With `PRIVATE_ORCHESTRATOR=true` the orchestrator is back, starting alongside the safety check and asked again if the check flags anything.
+
+A reply now waits on the slower of (safety check, reply), then the slower of the two checks: about 7s on a normal day instead of 15s. The joint stage is unchanged. This has not been through a full live eval yet; a small one comparing both settings is the way to check reply quality.
+

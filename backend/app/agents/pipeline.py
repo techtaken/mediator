@@ -28,6 +28,7 @@ from app.agents.state import (
     record_safety_flag,
     shared_view,
 )
+from app.config import get_settings
 from app.safety import HELP_MESSAGE, is_crisis_or_severe_harm, with_helplines
 
 logger = logging.getLogger(__name__)
@@ -142,6 +143,37 @@ def _default_plan(party: PartyKey) -> dict[str, Any]:
     }
 
 
+def _private_plan(view: dict[str, Any], party: PartyKey) -> dict[str, Any]:
+    """Where a private turn goes, without a model call.
+
+    The orchestrator's private-chat rules, worked out from the room's own
+    signals (as of the speaker's last turn, which is what the orchestrator
+    saw too). Safety stops are handled before this; asking for a person is
+    handled by the caucus pointing to "Talk to a person" in Options.
+    """
+    plan = _default_plan(party)
+    me = (view.get("parties") or {}).get(party) or {}
+    if int(view.get("escalation_stage") or 0) >= 7:
+        return {**plan, "stage": "REFER_TO_HUMAN", "next_agent": "HANDOFF", "gate_triggered": 2, "reason": "escalation_stage >= 7"}
+    if int(me.get("intensity") or 0) >= 8:
+        return {
+            **plan,
+            "stage": "DE_ESCALATE",
+            "gate_triggered": 3,
+            "instructions_to_agent": "Feelings are running high. Slow down, acknowledge them, and offer a pause.",
+            "reason": "intensity >= 8",
+        }
+    if me.get("willing") is False:
+        return {
+            **plan,
+            "stage": "BUILD_READINESS",
+            "gate_triggered": 4,
+            "instructions_to_agent": "They seem unsure about going on. Check gently whether they want to continue; stopping is fine.",
+            "reason": "not willing",
+        }
+    return plan
+
+
 def _is_halt(safety: dict[str, Any]) -> bool:
     return safety.get("action") == "HALT_AND_REFER" or int(safety.get("severity") or 0) >= 3
 
@@ -166,9 +198,17 @@ def handle_party_turn(
     topic: str | None = None,
     language: str | None = None,
     caller: AgentCaller = call_agent,
+    use_orchestrator: bool | None = None,
 ) -> TurnResult:
-    """One private-intake turn. The reply always goes back to `party`."""
+    """One private-intake turn. The reply always goes back to `party`.
+
+    use_orchestrator: ask the orchestrator model where the turn goes (default:
+    the PRIVATE_ORCHESTRATOR setting). Otherwise its private-chat rules are
+    worked out in code, and the reply starts while the message is checked.
+    """
     private = normalize_private(private)
+    if use_orchestrator is None:
+        use_orchestrator = get_settings().private_orchestrator
 
     if is_crisis_or_severe_harm(message):
         state["stage"] = "HALT_AND_REFER"
@@ -191,12 +231,46 @@ def handle_party_turn(
             logger.exception("inbound safety check failed; continuing with care")
             return None
 
-    # Almost every message is fine, so the orchestrator starts at the same time,
-    # as if the check came back clean. If it didn't, the orchestrator is asked
-    # again with the real report, so flagged turns are handled as before.
-    safety, early_plan = _side_by_side(
-        check_message, lambda: _ask_orchestrator(view, party, message, ASSUMED_CLEAN_SAFETY, caller)
-    )
+    def caucus_mapping(instruction: str) -> dict[str, str]:
+        return {
+            "PARTY_ID": party,
+            "SHARED_STATE_JSON": dumps(view),
+            # Confidentiality in code: only the speaking party's own memory is ever passed.
+            "PRIVATE_MEMORY": dumps(private),
+            "LATEST_EVENT": dumps({"party": party, "message": message}),
+            "INSTRUCTION": instruction,
+            "RELATIONSHIP_CONTEXT": relationship_context or "",
+            "DISPUTE_TOPIC": topic_for(party, topic),
+            "LANGUAGE": language_instruction(language),
+        }
+
+    def run_caucus(instruction: str) -> dict[str, Any]:
+        try:
+            return caller("CAUCUS", caucus_mapping(instruction))
+        except Exception:
+            logger.exception("caucus agent failed")
+            return {
+                "reply_to_party": CAUCUS_FALLBACK,
+                "state_updates": {},
+                "share_proposal": {"text": None, "approved_by_party": False},
+            }
+
+    # Almost every message is fine, so the next step starts at the same time,
+    # as if the check came back clean: the orchestrator, or without it the
+    # reply itself. If the check finds anything, that step is redone with the
+    # real result, so flagged turns are handled as before. A reply started
+    # early is never sent or saved unless the check came back clean.
+    early_caucus = None
+    if use_orchestrator:
+        safety, early_plan = _side_by_side(
+            check_message, lambda: _ask_orchestrator(view, party, message, ASSUMED_CLEAN_SAFETY, caller)
+        )
+    else:
+        early_plan = _private_plan(view, party)
+        early_handoff = early_plan["next_agent"] in HANDOFF_AGENTS
+        safety, early_caucus = _side_by_side(
+            check_message, lambda: None if early_handoff else run_caucus(_instruction(early_plan, 0))
+        )
     if safety is None:
         safety = _safety_unavailable()
         append_audit(state, {"stage": state.get("stage"), "agent": "SAFETY_GUARDIAN", "reason": "inbound check unavailable"})
@@ -210,39 +284,23 @@ def handle_party_turn(
     elif note_clean_turn(state, party):
         append_audit(state, {"stage": state.get("stage"), "agent": "SAFETY_GUARDIAN", "reason": "hold lifted after clean turns"})
 
-    raw_plan = early_plan if severity == 0 else _ask_orchestrator(view, party, message, safety, caller)
+    if use_orchestrator and severity:
+        raw_plan = _ask_orchestrator(view, party, message, safety, caller)
+    else:
+        raw_plan = early_plan
     plan = _apply_plan(state, party, raw_plan)
     next_agent = plan["next_agent"]
 
     if next_agent in HANDOFF_AGENTS or plan.get("stage") in {"HALT_AND_REFER", "REFER_TO_HUMAN"}:
         return _handoff(state, party, plan, caller)
 
-    care = CARE_NOTES.get(min(severity, 2), "")
-    instruction = " ".join(part for part in (care, str(plan.get("instructions_to_agent") or "")) if part)
-    mapping = {
-        "PARTY_ID": party,
-        "SHARED_STATE_JSON": dumps(party_view(state, party)),
-        # Confidentiality in code: only the speaking party's own memory is ever passed.
-        "PRIVATE_MEMORY": dumps(private),
-        "LATEST_EVENT": dumps({"party": party, "message": message}),
-        "INSTRUCTION": instruction,
-        "RELATIONSHIP_CONTEXT": relationship_context or "",
-        "DISPUTE_TOPIC": topic_for(party, topic),
-        "LANGUAGE": language_instruction(language),
-    }
-
-    try:
-        caucus = caller("CAUCUS", mapping)
-    except Exception:
-        logger.exception("caucus agent failed")
-        caucus = {
-            "reply_to_party": CAUCUS_FALLBACK,
-            "state_updates": {},
-            "share_proposal": {"text": None, "approved_by_party": False},
-        }
+    instruction = _instruction(plan, severity)
+    caucus = early_caucus if early_caucus is not None and severity == 0 else run_caucus(instruction)
 
     def regenerate(feedback: str) -> str:
-        retry = caller("CAUCUS", {**mapping, "INSTRUCTION": f"{instruction}\nREWRITE: the previous draft was rejected: {feedback}"})
+        retry = caller(
+            "CAUCUS", caucus_mapping(f"{instruction}\nREWRITE: the previous draft was rejected: {feedback}")
+        )
         return str(retry.get("reply_to_party") or "")
 
     draft = _guard_outgoing(
@@ -266,6 +324,11 @@ def handle_party_turn(
         agent=f"CAUCUS_{party}",
         extras={"caucus": caucus},
     )
+
+
+def _instruction(plan: dict[str, Any], severity: int) -> str:
+    care = CARE_NOTES.get(min(severity, 2), "")
+    return " ".join(part for part in (care, str(plan.get("instructions_to_agent") or "")) if part)
 
 
 def _ask_orchestrator(

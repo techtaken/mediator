@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     pin_access_ttl_minutes: int = 120
     pin_max_attempts: int = 5
     pin_lock_minutes: int = 15
+    # Ask the orchestrator model where each private-chat turn goes. Off: the
+    # same private-chat rules are worked out in code, which saves a model call
+    # (several seconds) per reply. The joint stage doesn't use this.
+    private_orchestrator: bool = False
 
     # Data retention. 0 disables the purge.
     retention_days: int = 180
