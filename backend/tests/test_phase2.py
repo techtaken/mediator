@@ -27,7 +27,7 @@ from app.routers import jobs as jobs_module
 from app.routers import joint as joint_module
 from app.routers import sessions as sessions_module
 from app.routers.sessions import get_actor, get_entry_actor
-from tests.fakes import FakeSupabase
+from tests.fakes import FakeSupabase, opened
 from tests.test_pipeline import FakeAgents
 
 app = FastAPI()
@@ -534,7 +534,9 @@ def test_reasons_are_not_kept_in_the_stored_state(db):
     stored = db.rows("sessions")[0]["mediation_state"]
     assert stored["audit_log"] == [{"seq": 1, "stage": "STORYTELLING", "agent": "ORCHESTRATOR", "gate": 5}]
     (event,) = db.rows("mediation_audit_events")
-    assert event["reason"] == "A is hurt about Goa"  # short-term, until scrubbed
+    # Stored encrypted, and only until scrubbed.
+    assert event["reason"].startswith("enc1:") and "Goa" not in str(event["payload"])
+    assert opened("mediation_audit_events", event)["reason"] == "A is hurt about Goa"
 
 
 def _job_settings(token="secret-job-token"):

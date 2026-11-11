@@ -1,5 +1,8 @@
-"""Admin views over every session, including both private rooms, and the
-referral inbox.
+"""Admin views over every session, and the referral inbox.
+
+Private text (chat messages, the mediator's private notes, agents' reasoning)
+is stored encrypted and is never opened here: admins see who wrote when, not
+what. See app/crypto.py.
 
 Access is limited to ADMIN_EMAILS. Every session an admin opens is written to
 mediation_audit_events first; if that write fails the view is refused, so no
@@ -19,13 +22,18 @@ from app.agents.store import load_state
 from app.agents.telemetry import summarize, track_calls
 from app.auth import Admin, load_session, require_admin
 from app.config import get_settings
+from app.crypto import is_sealed
 from app.db import get_supabase
 from app.followup_store import list_followups
+from app.retention import structured_audit
 from app.joint_store import get_agreement, list_ideas, list_responses, now_iso
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin")
+
+# Shown in place of private text, which admins never see.
+PRIVATE_PLACEHOLDER = "[private, encrypted: not shown]"
 
 SESSION_STATUSES = {"intake", "building_joint", "joint_review", "resolved", "halted"}
 # Never shown to admins: the invite secret and PIN hash protect Person B's room.
@@ -110,6 +118,13 @@ def _record_view(session_id: str, admin: Admin, action: str = "admin_view", reas
         raise HTTPException(status_code=503, detail="Could not record this access, so it was refused.") from exc
 
 
+def _without_private_reasoning(row: dict[str, Any]) -> dict[str, Any]:
+    """Agents' encrypted reasoning stays hidden; admins' own view records stay readable."""
+    if not is_sealed(row.get("reason")):
+        return row
+    return {**row, "reason": PRIVATE_PLACEHOLDER, "payload": structured_audit(row.get("payload") or {})}
+
+
 @router.get("/sessions/{session_id}")
 def session_detail(session_id: str, admin: Admin = Depends(require_admin)):
     session = load_session(session_id)
@@ -121,11 +136,12 @@ def session_detail(session_id: str, admin: Admin = Depends(require_admin)):
     )
     rooms: dict[str, list[dict[str, Any]]] = {"user_a": [], "user_b": []}
     for message in messages:
-        rooms.setdefault(message["audience_role"], []).append(message)
+        rooms.setdefault(message["audience_role"], []).append({**message, "content": PRIVATE_PLACEHOLDER})
 
-    memories = (
-        supabase.table("private_memories").select("*").eq("session_id", session_id).execute().data or []
-    )
+    memories = [
+        {**row, "notes": PRIVATE_PLACEHOLDER, "profile": {}}
+        for row in supabase.table("private_memories").select("*").eq("session_id", session_id).execute().data or []
+    ]
     audit = (
         supabase.table("mediation_audit_events")
         .select("*")
@@ -135,6 +151,7 @@ def session_detail(session_id: str, admin: Admin = Depends(require_admin)):
         .data
         or []
     )
+    audit = [_without_private_reasoning(row) for row in audit]
     summary = (
         supabase.table("joint_summaries").select("*").eq("session_id", session_id).limit(1).execute().data or []
     )

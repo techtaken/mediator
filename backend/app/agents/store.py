@@ -11,6 +11,7 @@ from app.agents.state import (
     normalize_private,
     pending_audit,
 )
+from app.crypto import audit_context, memory_context, seal, seal_json, unseal, unseal_json
 from app.db import get_supabase
 from app.retention import structured_audit
 
@@ -72,7 +73,16 @@ def load_private(session_id: str, party_role: str) -> dict[str, Any]:
         raise PersistError("Could not load private memory") from exc
     if not result.data:
         return empty_private()
-    return normalize_private(result.data[0])
+    return normalize_private(open_private_row(session_id, party_role, result.data[0]))
+
+
+def open_private_row(session_id: str, party_role: str, row: dict[str, Any]) -> dict[str, Any]:
+    """A private_memories row with its encrypted fields opened."""
+    return {
+        **row,
+        "notes": unseal(row.get("notes"), memory_context(session_id, party_role, "notes")),
+        "profile": unseal_json(row.get("profile"), memory_context(session_id, party_role, "profile")),
+    }
 
 
 def save_state(session_id: str, state: dict[str, Any], expected_version: int) -> int:
@@ -120,8 +130,8 @@ def save_private(session_id: str, party_role: str, private: dict[str, Any]) -> N
             {
                 "session_id": session_id,
                 "party_role": party_role,
-                "notes": private["notes"],
-                "profile": private["profile"],
+                "notes": seal(private["notes"], memory_context(session_id, party_role, "notes")),
+                "profile": seal_json(private["profile"], memory_context(session_id, party_role, "profile")),
             },
             on_conflict="session_id,party_role",
         ).execute()
@@ -145,14 +155,17 @@ def persist_turn(
 def _insert_audit(session_id: str, entries: list[dict[str, Any]]) -> None:
     if not entries:
         return
+    context = audit_context(session_id)
+    # Agents' free-text reasoning can echo private chat, so it is encrypted;
+    # the structured fields stay readable for monitoring.
     rows = [
         {
             "session_id": session_id,
             "stage": entry.get("stage"),
             "agent": entry.get("agent"),
             "gate": entry.get("gate") if isinstance(entry.get("gate"), int) else None,
-            "reason": str(entry.get("reason") or entry.get("detail") or "")[:2000],
-            "payload": entry,
+            "reason": seal(str(entry.get("reason") or entry.get("detail") or "")[:2000], context),
+            "payload": {**structured_audit(entry), "sealed": seal_json(entry, context)},
         }
         for entry in entries
     ]

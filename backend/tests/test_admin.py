@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.agents.state import new_shared_state
-from app.routers.admin import router
+from app.routers.admin import PRIVATE_PLACEHOLDER, router
 from tests.fakes import FakeSupabase
 
 app = FastAPI()
@@ -124,12 +124,14 @@ def test_unknown_status_is_rejected(db):
 # --- detail -------------------------------------------------------------------
 
 
-def test_detail_shows_both_rooms_memory_and_safety(db):
+def test_detail_never_shows_private_text(db):
     _seed(db)
     data = client.get("/api/admin/sessions/s1", headers=ADMIN).json()
-    assert [m["content"] for m in data["rooms"]["user_a"]] == ["B went to Goa without me", "That sounds hurtful."]
-    assert [m["content"] for m in data["rooms"]["user_b"]] == ["I did invite them", "they said no"]
-    assert data["private_memories"]["user_b"]["notes"] == "B feels excluded too"
+    assert [m["content"] for m in data["rooms"]["user_a"]] == [PRIVATE_PLACEHOLDER] * 2
+    assert [m["content"] for m in data["rooms"]["user_b"]] == [PRIVATE_PLACEHOLDER] * 2
+    assert [m["sender_role"] for m in data["rooms"]["user_b"]] == ["user_b", "user_b"]
+    assert data["private_memories"]["user_b"]["notes"] == PRIVATE_PLACEHOLDER
+    assert "B feels excluded" not in str(data) and "Goa without me" not in str(data)
     assert data["state"]["safety"]["flags"]["B"]["severity"] == 2
     assert "invite_token_b" not in data["session"] and "mediation_state" not in data["session"]
     assert data["joint_summary"] is None

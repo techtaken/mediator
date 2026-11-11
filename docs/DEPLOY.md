@@ -5,7 +5,7 @@ that need your accounts.
 
 | Part | Where | Config |
 |---|---|---|
-| Database + auth | Supabase | `supabase/migrations/001…013` |
+| Database + auth | Supabase | `supabase/migrations/001…014` |
 | API (FastAPI) | Render (Docker) | `render.yaml`, `backend/Dockerfile` |
 | Scheduled jobs | Render cron (or any scheduler) | `render.yaml` |
 | Web app (Next.js) | Vercel | notes below |
@@ -75,6 +75,8 @@ To run the live evals in CI, add a `GEMINI_API_KEY` repository secret and start 
 | `SUPABASE_PUBLISHABLE_KEY` | no | — | Not used by the backend today |
 | `SUPABASE_JWKS_URL` | no | `<SUPABASE_URL>/auth/v1/.well-known/jwks.json` | Verifies Person A's sign-in |
 | `GEMINI_API_KEY` | yes | — | Google AI Studio key |
+| `DATA_ENCRYPTION_KEY` | yes | — | Encrypts private chats at rest; the API won't start without it. 32 random bytes, base64 (command in `backend/.env.example`). **Back it up**: losing it loses every private chat. Use a different key from local dev |
+| `DATA_ENCRYPTION_OLD_KEYS` | no | empty | Comma-separated previous keys, after a rotation |
 | `GEMINI_MODEL` | no | `gemini-3.5-flash-lite` | |
 | `GEMINI_TIMEOUT_MS` | no | 30000 | Per agent call |
 | `GEMINI_PRICE_INPUT_PER_M` / `GEMINI_PRICE_OUTPUT_PER_M` | no | 0.10 / 0.40 | USD per 1M tokens, admin cost estimate only |

@@ -106,7 +106,7 @@ def test_both_welcome_messages_disclose_the_ai_once(db, as_party):
     # Agents are told not to repeat disclaimers, so the welcome must carry them.
     _open_room_and_join(as_party, db)
     for party in ("user_a", "user_b"):
-        (welcome,) = db.rows("messages", audience_role=party)
+        (welcome,) = db.plain_rows("messages", audience_role=party)
         assert "AI mediator" in welcome["content"]
         assert "legal, medical or financial advice" in welcome["content"]
         assert "stop at any time" in welcome["content"]
@@ -114,12 +114,12 @@ def test_both_welcome_messages_disclose_the_ai_once(db, as_party):
 
 def test_b_is_told_who_opened_the_room_and_why(db, as_party):
     _open_room_and_join(as_party, db)
-    (welcome_b,) = db.rows("messages", audience_role="user_b")
+    (welcome_b,) = db.plain_rows("messages", audience_role="user_b")
     assert "Rahul can't read it" in welcome_b["content"]
     assert "Rahul opened this room about" in welcome_b["content"]
     assert '"You went on the Goa trip without me"' in welcome_b["content"]
     assert "your side" in welcome_b["content"]
-    (welcome_a,) = db.rows("messages", audience_role="user_a")
+    (welcome_a,) = db.plain_rows("messages", audience_role="user_a")
     assert 'You opened this room about: "You went on the Goa trip without me"' in welcome_a["content"]
 
 
@@ -160,11 +160,26 @@ def test_send_message_runs_turn_and_persists_everything(db, as_party, agents):
     session = db.rows("sessions")[0]
     assert session["state_version"] == 1
     assert "positions" not in session["mediation_state"]["parties"]["A"]
-    private = db.rows("private_memories", party_role="user_a")[0]
+    private = db.plain_rows("private_memories", party_role="user_a")[0]
     assert private["profile"]["positions"] == ["Pay me back now"]
     audit = db.rows("mediation_audit_events")
     assert audit and len(audit) == len(session["mediation_state"]["audit_log"])
     assert session["mediation_state"]["audit_persisted_seq"] == session["mediation_state"]["audit_seq"]
+
+
+def test_when_no_reply_can_be_written_nothing_from_the_turn_is_kept(db, as_party, agents):
+    _session(db)
+    agents.overrides["CAUCUS"] = RuntimeError("503 high demand")
+    before = len(db.rows("messages", audience_role="user_a"))
+    response = client.post("/api/sessions/sess_abc/messages", json={"content": "I want my money back."})
+    assert response.status_code == 503
+    assert "wasn't sent" in response.json()["detail"] and "try again" in response.json()["detail"]
+    assert len(db.rows("messages", audience_role="user_a")) == before
+    assert db.rows("sessions")[0]["state_version"] == 0
+    assert db.rows("private_memories") == []
+    # Sending it again once the mediator is back works normally.
+    agents.overrides.pop("CAUCUS")
+    assert client.post("/api/sessions/sess_abc/messages", json={"content": "I want my money back."}).status_code == 200
 
 
 def test_nothing_from_a_reaches_b_room(db, as_party, agents):

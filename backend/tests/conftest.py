@@ -13,6 +13,8 @@ for _name, _value in (
     ("SUPABASE_URL", "https://test-project.supabase.co"),
     ("SUPABASE_SECRET_KEY", "test-dummy-secret"),
     ("GEMINI_API_KEY", DUMMY_GEMINI_KEY),
+    # 32 bytes of "k", base64: a fixed test key for encryption at rest.
+    ("DATA_ENCRYPTION_KEY", "a2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2s="),
 ):
     # An environment variable would override backend/.env, so only fill gaps.
     if _name not in os.environ and f"{_name}=" not in _env_text:

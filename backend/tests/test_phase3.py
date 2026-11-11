@@ -403,13 +403,13 @@ def test_language_choice_reaches_caucus_and_rewrites_the_welcome(db, as_party, a
                                  "content": sessions_module.welcome_a("Goa trip")}).execute()
     data = client.post("/api/sessions/sess_abc/language", json={"language": "hi"}).json()
     assert data["my_language"] == "hi"
-    (welcome,) = db.rows("messages", audience_role="user_a")
+    (welcome,) = db.plain_rows("messages", audience_role="user_a")
     assert "यह आपका निजी कमरा है" in welcome["content"] and "AI" in welcome["content"]
     client.post("/api/sessions/sess_abc/messages", json={"content": "Mujhe bura laga"})
     assert "Hindi, written in Devanagari script" in agents.of("CAUCUS")[0]["prompt"]
     # After they've written, the welcome is left alone.
     client.post("/api/sessions/sess_abc/language", json={"language": "en"})
-    first = db.rows("messages", audience_role="user_a")[0]
+    first = db.plain_rows("messages", audience_role="user_a")[0]
     assert "यह आपका निजी कमरा है" in first["content"]
 
 

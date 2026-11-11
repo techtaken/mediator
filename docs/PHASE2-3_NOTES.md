@@ -194,3 +194,10 @@ Measured in the run-through: each private reply made five model calls one after 
 
 A reply now waits on the slower of (safety check, reply), then the slower of the two checks: about 7s on a normal day instead of 15s. The joint stage is unchanged. This has not been through a full live eval yet; a small one comparing both settings is the way to check reply quality.
 
+## Follow-up: private text encrypted at rest
+
+- What is encrypted (AES-256-GCM, `backend/app/crypto.py`): chat messages, the mediator's private notes and profile on each person, share drafts and approved share text, and agents' free-text reasoning in the audit table. A database dump, a backup or the Supabase dashboard shows `enc1:…`.
+- The key (`DATA_ENCRYPTION_KEY`) lives only in the API's environment. The API refuses to start without it. Each value is bound to its room and field, so it can't be copied elsewhere and opened. `DATA_ENCRYPTION_OLD_KEYS` keeps older rows readable after a rotation.
+- The admin room view no longer shows private text: messages, private notes and agents' reasoning come back as "[private, encrypted: not shown]". Admins still see who wrote when, safety flags and the shared state.
+- Older plain rows still read fine; `python -m app.encrypt_existing` encrypts them (safe to re-run).
+- Not covered yet: anything already shared between the two people stays plain (the shared state, which includes approved shares, the joint summary, ideas, agreement, check-in answers). The server holds the key, so code on the server can still read private text; that's needed to run the mediator. Text sent to Gemini is outside this.

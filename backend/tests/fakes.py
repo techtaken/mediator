@@ -188,7 +188,30 @@ class FakeSupabase:
     def rows(self, table: str, **filters: Any) -> list[dict[str, Any]]:
         return [row for row in self.tables.get(table, []) if all(row.get(k) == v for k, v in filters.items())]
 
+    def plain_rows(self, table: str, **filters: Any) -> list[dict[str, Any]]:
+        """Like rows(), with encrypted fields opened, as the app reads them."""
+        return [opened(table, row) for row in self.rows(table, **filters)]
+
     def add_session(self, **overrides: Any) -> dict[str, Any]:
         row = self._new_row("sessions", {"id": "sess_abc", "created_by": "user_123", **overrides})
         self.tables.setdefault("sessions", []).append(row)
         return row
+
+
+def opened(table: str, row: dict[str, Any]) -> dict[str, Any]:
+    """A stored row with the fields the app encrypts opened again."""
+    from app import crypto
+
+    sid, party = row.get("session_id"), row.get("party_role")
+    row = dict(row)
+    if table == "messages":
+        row["content"] = crypto.unseal(row.get("content"), crypto.message_context(sid))
+    elif table == "private_memories":
+        row["notes"] = crypto.unseal(row.get("notes"), crypto.memory_context(sid, party, "notes"))
+        row["profile"] = crypto.unseal_json(row.get("profile"), crypto.memory_context(sid, party, "profile"))
+    elif table == "party_shares":
+        for field in ("draft_text", "approved_text"):
+            row[field] = crypto.unseal(row.get(field), crypto.share_context(sid, party, field))
+    elif table == "mediation_audit_events":
+        row["reason"] = crypto.unseal(row.get("reason"), crypto.audit_context(sid))
+    return row

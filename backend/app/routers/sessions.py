@@ -11,7 +11,14 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, 
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
-from app.agents.pipeline import check_share, draft_share, handle_party_turn, run_joint_pipeline, share_severity
+from app.agents.pipeline import (
+    MediatorUnavailable,
+    check_share,
+    draft_share,
+    handle_party_turn,
+    run_joint_pipeline,
+    share_severity,
+)
 from app.agents.state import (
     append_audit,
     empty_party,
@@ -48,6 +55,7 @@ from app.ratelimit import limit_messages, limit_session_creation, limit_writes
 from app.retention import delete_party_data, delete_room
 from app.joint_store import now_iso, seed_ideas
 from app.config import get_settings
+from app.crypto import message_context, seal, share_context, unseal
 from app.db import get_supabase
 from app.safety import HELP_MESSAGE, HELPLINES, PAUSED_FOR_OTHER_MESSAGE, is_crisis_or_severe_harm, with_helplines
 from app.schemas import (
@@ -74,6 +82,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
 
 HALTED_DETAIL = "This room has been paused."
+MEDIATOR_BUSY_DETAIL = (
+    "The mediator couldn't reply just now, so your message wasn't sent. It's still in the box: please try again in a minute."
+)
 INVITE_RESET_DETAIL = "This link no longer works. Ask the person who invited you for a new one."
 SAVED_ELSEWHERE_DETAIL = "This conversation is already saved to another account."
 NOT_YET_READY_DETAIL = "Let's keep talking privately a little longer before the joint session."
@@ -273,10 +284,22 @@ def _get_share(session_id: str, party_role: str) -> dict:
         .execute()
         .data
     )
-    return rows[0] if rows else {}
+    if not rows:
+        return {}
+    row = dict(rows[0])
+    for field in SHARE_TEXT_FIELDS:
+        row[field] = unseal(row.get(field), share_context(session_id, party_role, field))
+    return row
+
+
+# Share text is stored encrypted; see app/crypto.py.
+SHARE_TEXT_FIELDS = ("draft_text", "approved_text")
 
 
 def _upsert_share(session_id: str, party_role: str, **fields) -> None:
+    for field in SHARE_TEXT_FIELDS:
+        if field in fields:
+            fields[field] = seal(fields[field], share_context(session_id, party_role, field))
     get_supabase().table("party_shares").upsert(
         {
             "session_id": session_id,
@@ -300,8 +323,10 @@ def _own_transcript(session_id: str, party_role: str) -> str:
         .data
         or []
     )
+    context = message_context(session_id)
     return "\n".join(
-        f"{'Them' if row['sender_role'] == party_role else 'Mediator'}: {row['content']}" for row in rows
+        f"{'Them' if row['sender_role'] == party_role else 'Mediator'}: {unseal(row['content'], context)}"
+        for row in rows
     )
 
 
@@ -343,7 +368,7 @@ def _insert_message(
                 "session_id": session_id,
                 "sender_role": sender_role,
                 "audience_role": audience_role,
-                "content": content,
+                "content": seal(content, message_context(session_id)),
                 "is_private": is_private,
             }
         )
@@ -351,7 +376,7 @@ def _insert_message(
     )
     if not result.data:
         raise HTTPException(status_code=500, detail="Could not store message")
-    return result.data[0]
+    return {**result.data[0], "content": content}
 
 
 def _claim_joint(session: dict) -> dict | None:
@@ -511,7 +536,8 @@ def list_messages(ctx: tuple[dict, Actor] = Depends(get_actor)):
         .order("created_at")
         .execute()
     )
-    return [MessageOut(**row) for row in result.data or []]
+    context = message_context(session["id"])
+    return [MessageOut(**{**row, "content": unseal(row["content"], context)}) for row in result.data or []]
 
 
 def _require_same_invited_person(session: dict, actor: Actor) -> None:
@@ -574,6 +600,11 @@ def send_message(body: SendMessageBody, ctx: tuple[dict, Actor] = Depends(get_ac
         except PersistError as exc:
             logger.exception("turn persistence failed for %s", session["id"])
             raise HTTPException(status_code=503, detail="Could not save your conversation. Please try again.") from exc
+        except MediatorUnavailable as exc:
+            # Nothing from this turn is kept, so sending it again starts clean.
+            logger.warning("no reply for %s: %s", session["id"], exc)
+            get_supabase().table("messages").delete().eq("id", user_row["id"]).execute()
+            raise HTTPException(status_code=503, detail=MEDIATOR_BUSY_DETAIL) from exc
 
     assert turn is not None
     if turn.halt:
@@ -1128,7 +1159,9 @@ def set_language(body: LanguageBody, ctx: tuple[dict, Actor] = Depends(get_entry
             if actor.party == "user_a"
             else welcome_b(session.get("topic"), body.language, session.get("name_a"))
         )
-        supabase.table("messages").update({"content": content}).eq("id", rows[0]["id"]).execute()
+        supabase.table("messages").update({"content": seal(content, message_context(sid))}).eq(
+            "id", rows[0]["id"]
+        ).execute()
     return _session_out(load_session(sid), actor)
 
 

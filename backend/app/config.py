@@ -45,6 +45,13 @@ class Settings(BaseSettings):
     # (several seconds) per reply. The joint stage doesn't use this.
     private_orchestrator: bool = False
 
+    # Encryption at rest for private text (see app/crypto.py). 32 random bytes,
+    # base64. Required: the server won't start without it. Losing it makes
+    # every encrypted message unreadable, so keep a copy somewhere safe.
+    data_encryption_key: str = ""
+    # Earlier keys, comma-separated, still used to read older rows after a rotation.
+    data_encryption_old_keys: str = ""
+
     # Data retention. 0 disables the purge.
     retention_days: int = 180
     # Free-text agent reasoning in the audit table is cleared after this many days.

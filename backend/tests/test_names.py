@@ -208,7 +208,7 @@ def test_deleting_my_data_removes_my_name_from_the_room(db):
 def test_b_welcome_names_the_person_who_invited_them(db):
     _open_room(db)
     client.get(ROOM, headers=LINK)
-    (welcome,) = db.rows("messages", audience_role="user_b")
+    (welcome,) = db.plain_rows("messages", audience_role="user_b")
     assert "Rahul can't read it" in welcome["content"]
     assert 'Rahul opened this room about: "The Goa trip"' in welcome["content"]
 
@@ -230,7 +230,7 @@ def test_changing_language_keeps_the_name_in_the_welcome(db):
     _open_room(db)
     client.get(ROOM, headers=LINK)
     client.post(f"{ROOM}/language", json={"language": "hinglish"}, headers=LINK)
-    (welcome,) = db.rows("messages", audience_role="user_b")
+    (welcome,) = db.plain_rows("messages", audience_role="user_b")
     assert "Rahul ne yeh room" in welcome["content"]
 
 
