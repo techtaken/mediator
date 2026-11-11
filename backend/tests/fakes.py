@@ -1,0 +1,217 @@
+"""In-memory stand-in for the subset of the supabase-py query builder we use.
+
+Filters are applied for real, so tests can exercise conditional updates
+(optimistic locking, atomic status claims) rather than canned return values.
+"""
+
+from __future__ import annotations
+
+import copy
+import itertools
+import uuid
+from dataclasses import dataclass
+from typing import Any
+
+
+@dataclass
+class Result:
+    data: list[dict[str, Any]]
+
+
+def _compare(actual: Any, op: str, value: Any) -> bool:
+    if actual is None:
+        return False
+    if op == "lt":
+        return actual < value
+    if op == "lte":
+        return actual <= value
+    return actual > value
+
+
+class FakeQuery:
+    def __init__(self, db: "FakeSupabase", table: str):
+        self.db = db
+        self.table_name = table
+        self.op = "select"
+        self.payload: Any = None
+        self.filters: list[tuple[str, Any]] = []
+        self.compare: list[tuple[str, str, Any]] = []
+        self.limit_n: int | None = None
+        self.offset_n = 0
+        self.order_by: str | None = None
+        self.order_desc = False
+        self.in_filters: list[tuple[str, list[Any]]] = []
+        self.on_conflict: str | None = None
+
+    # builder ---------------------------------------------------------------
+    def select(self, *_cols: str) -> "FakeQuery":
+        self.op = "select"
+        return self
+
+    def insert(self, payload: Any) -> "FakeQuery":
+        self.op, self.payload = "insert", payload
+        return self
+
+    def update(self, payload: dict[str, Any]) -> "FakeQuery":
+        self.op, self.payload = "update", payload
+        return self
+
+    def upsert(self, payload: dict[str, Any], on_conflict: str = "id") -> "FakeQuery":
+        self.op, self.payload, self.on_conflict = "upsert", payload, on_conflict
+        return self
+
+    def delete(self) -> "FakeQuery":
+        self.op = "delete"
+        return self
+
+    def eq(self, column: str, value: Any) -> "FakeQuery":
+        self.filters.append((column, value))
+        return self
+
+    def lt(self, column: str, value: Any) -> "FakeQuery":
+        self.compare.append((column, "lt", value))
+        return self
+
+    def lte(self, column: str, value: Any) -> "FakeQuery":
+        self.compare.append((column, "lte", value))
+        return self
+
+    def gt(self, column: str, value: Any) -> "FakeQuery":
+        self.compare.append((column, "gt", value))
+        return self
+
+    def is_(self, column: str, value: Any) -> "FakeQuery":
+        # supabase-py takes "null" for IS NULL.
+        self.filters.append((column, None if value in ("null", None) else value))
+        return self
+
+    def in_(self, column: str, values: list[Any]) -> "FakeQuery":
+        self.in_filters.append((column, list(values)))
+        return self
+
+    def limit(self, n: int) -> "FakeQuery":
+        self.limit_n = n
+        return self
+
+    def range(self, start: int, end: int) -> "FakeQuery":
+        self.offset_n, self.limit_n = start, end - start + 1
+        return self
+
+    def order(self, column: str, desc: bool = False) -> "FakeQuery":
+        self.order_by, self.order_desc = column, desc
+        return self
+
+    # execution -------------------------------------------------------------
+    def _match(self, row: dict[str, Any]) -> bool:
+        return (
+            all(row.get(column) == value for column, value in self.filters)
+            and all(row.get(column) in values for column, values in self.in_filters)
+            and all(_compare(row.get(column), op, value) for column, op, value in self.compare)
+        )
+
+    def execute(self) -> Result:
+        failure = self.db.failures.get((self.table_name, self.op))
+        if failure:
+            raise failure
+        rows = self.db.tables.setdefault(self.table_name, [])
+        if self.op == "select":
+            found = [copy.deepcopy(row) for row in rows if self._match(row)]
+            if self.order_by:
+                found.sort(key=lambda row: row.get(self.order_by) or "", reverse=self.order_desc)
+            found = found[self.offset_n :]
+            if self.limit_n is not None:
+                found = found[: self.limit_n]
+            return Result(found)
+        if self.op == "insert":
+            payloads = self.payload if isinstance(self.payload, list) else [self.payload]
+            inserted = [self.db._new_row(self.table_name, dict(item)) for item in payloads]
+            rows.extend(inserted)
+            return Result(copy.deepcopy(inserted))
+        if self.op == "update":
+            changed = []
+            for row in rows:
+                if self._match(row):
+                    row.update(copy.deepcopy(self.payload))
+                    changed.append(copy.deepcopy(row))
+            return Result(changed)
+        if self.op == "delete":
+            removed = [copy.deepcopy(row) for row in rows if self._match(row)]
+            rows[:] = [row for row in rows if not self._match(row)]
+            if self.table_name == "sessions":
+                # Like "on delete cascade" on every session_id foreign key.
+                gone = {row["id"] for row in removed}
+                for name, table in self.db.tables.items():
+                    if name != "sessions":
+                        table[:] = [row for row in table if row.get("session_id") not in gone]
+            return Result(removed)
+        if self.op == "upsert":
+            keys = [key.strip() for key in (self.on_conflict or "id").split(",")]
+            for row in rows:
+                if all(row.get(key) == self.payload.get(key) for key in keys):
+                    row.update(copy.deepcopy(self.payload))
+                    return Result([copy.deepcopy(row)])
+            new = self.db._new_row(self.table_name, dict(self.payload))
+            rows.append(new)
+            return Result([copy.deepcopy(new)])
+        raise AssertionError(self.op)
+
+
+class FakeSupabase:
+    def __init__(self) -> None:
+        self.tables: dict[str, list[dict[str, Any]]] = {}
+        self.failures: dict[tuple[str, str], Exception] = {}
+        self._clock = itertools.count(1)
+
+    def table(self, name: str) -> FakeQuery:
+        return FakeQuery(self, name)
+
+    def _new_row(self, table: str, row: dict[str, Any]) -> dict[str, Any]:
+        row.setdefault("id", str(uuid.uuid4()))
+        row.setdefault("created_at", f"2026-06-01T00:00:{next(self._clock):06d}Z")
+        if table == "sessions":
+            row.setdefault("status", "intake")
+            row.setdefault("user_a_ready", False)
+            row.setdefault("user_b_ready", False)
+            row.setdefault("invite_token_b", "token_xyz")
+            row.setdefault("state_version", 0)
+            row.setdefault("mediation_state", {})
+            row.setdefault("halted_for", None)
+            row.setdefault("halt_kind", None)
+            row.setdefault("halted_reason", None)
+            row.setdefault("b_pin_failed_attempts", 0)
+        if table == "messages":
+            row.setdefault("is_private", True)
+        if table == "mediation_audit_events":
+            row.setdefault("reason_scrubbed", False)
+        return row
+
+    def rows(self, table: str, **filters: Any) -> list[dict[str, Any]]:
+        return [row for row in self.tables.get(table, []) if all(row.get(k) == v for k, v in filters.items())]
+
+    def plain_rows(self, table: str, **filters: Any) -> list[dict[str, Any]]:
+        """Like rows(), with encrypted fields opened, as the app reads them."""
+        return [opened(table, row) for row in self.rows(table, **filters)]
+
+    def add_session(self, **overrides: Any) -> dict[str, Any]:
+        row = self._new_row("sessions", {"id": "sess_abc", "created_by": "user_123", **overrides})
+        self.tables.setdefault("sessions", []).append(row)
+        return row
+
+
+def opened(table: str, row: dict[str, Any]) -> dict[str, Any]:
+    """A stored row with the fields the app encrypts opened again."""
+    from app import crypto
+
+    sid, party = row.get("session_id"), row.get("party_role")
+    row = dict(row)
+    if table == "messages":
+        row["content"] = crypto.unseal(row.get("content"), crypto.message_context(sid))
+    elif table == "private_memories":
+        row["notes"] = crypto.unseal(row.get("notes"), crypto.memory_context(sid, party, "notes"))
+        row["profile"] = crypto.unseal_json(row.get("profile"), crypto.memory_context(sid, party, "profile"))
+    elif table == "party_shares":
+        for field in ("draft_text", "approved_text"):
+            row[field] = crypto.unseal(row.get(field), crypto.share_context(sid, party, field))
+    elif table == "mediation_audit_events":
+        row["reason"] = crypto.unseal(row.get("reason"), crypto.audit_context(sid))
+    return row

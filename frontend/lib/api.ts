@@ -1,21 +1,76 @@
-import type { ChatMessage, JointSummary, Session } from "./types";
+import type {
+  ChatMessage,
+  CheckInAnswers,
+  FollowUp,
+  IdeaResponse,
+  JointState,
+  JointSummary,
+  Language,
+  RoomSummary,
+  Session,
+  ShareDraft,
+  Translation,
+} from "./types";
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+export const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 const TOKEN_KEY = (sessionId: string) => `mediator_invite_${sessionId}`;
 
+// Kept in localStorage so the invited person can come back on the same device
+// (closing the tab, or WhatsApp's in-app browser, used to lose access).
 export function saveInviteToken(sessionId: string, token: string) {
-  sessionStorage.setItem(TOKEN_KEY(sessionId), token);
+  try {
+    localStorage.setItem(TOKEN_KEY(sessionId), token);
+  } catch {
+    sessionStorage.setItem(TOKEN_KEY(sessionId), token);
+  }
 }
 
 export function getInviteToken(sessionId: string) {
   if (typeof window === "undefined") return null;
-  return sessionStorage.getItem(TOKEN_KEY(sessionId));
+  try {
+    return localStorage.getItem(TOKEN_KEY(sessionId)) ?? sessionStorage.getItem(TOKEN_KEY(sessionId));
+  } catch {
+    return sessionStorage.getItem(TOKEN_KEY(sessionId));
+  }
 }
 
-async function request<T>(
+const ACCESS_KEY = (sessionId: string) => `mediator_access_${sessionId}`;
+
+export type RoomAccess = { access_token: string; expires_at: string };
+
+// What a correct PIN unlocks. Only for this tab, so a shared phone asks again.
+export function saveRoomAccess(sessionId: string, access: RoomAccess) {
+  sessionStorage.setItem(ACCESS_KEY(sessionId), JSON.stringify(access));
+}
+
+export function clearRoomAccess(sessionId: string) {
+  sessionStorage.removeItem(ACCESS_KEY(sessionId));
+}
+
+export function getRoomAccess(sessionId: string) {
+  if (typeof window === "undefined") return null;
+  try {
+    const access = JSON.parse(sessionStorage.getItem(ACCESS_KEY(sessionId)) ?? "null") as RoomAccess | null;
+    return access && new Date(access.expires_at) > new Date() ? access.access_token : null;
+  } catch {
+    return null;
+  }
+}
+
+/** An API error that keeps the HTTP status, so pages can react to 404 / 410 / 423. */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
+export async function request<T>(
   path: string,
-  init: RequestInit & { accessToken?: string | null; inviteToken?: string | null } = {},
+  init: RequestInit & AuthOpts = {},
 ): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set("Content-Type", "application/json");
@@ -24,6 +79,9 @@ async function request<T>(
   }
   if (init.inviteToken) {
     headers.set("X-Invite-Token", init.inviteToken);
+  }
+  if (init.roomAccess) {
+    headers.set("X-Room-Access", init.roomAccess);
   }
 
   const res = await fetch(`${API}${path}`, { ...init, headers });
@@ -35,20 +93,68 @@ async function request<T>(
     } catch {
       /* ignore */
     }
-    throw new Error(detail);
+    throw new ApiError(detail, res.status);
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }
 
-type AuthOpts = { accessToken?: string | null; inviteToken?: string | null };
+export type AuthOpts = { accessToken?: string | null; inviteToken?: string | null; roomAccess?: string | null };
 
-export function createSession(context: string, accessToken: string) {
+export function createSession(topic: string, invitedName: string, context: string, accessToken: string) {
   return request<Session>("/api/sessions", {
     method: "POST",
     accessToken,
-    body: JSON.stringify({ relationship_context: context }),
+    body: JSON.stringify({ topic, invited_name: invitedName, relationship_context: context }),
   });
+}
+
+export function fetchMyProfile(accessToken: string) {
+  return request<{ name: string | null }>("/api/me", { accessToken });
+}
+
+export function saveMyName(name: string, accessToken: string) {
+  return request<{ name: string | null }>("/api/me", {
+    method: "PUT",
+    accessToken,
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function fetchMyRooms(accessToken: string) {
+  return request<RoomSummary[]>("/api/sessions", { accessToken });
+}
+
+/** The invited person accepts how Mediator works, gives their name and chooses their PIN. */
+export function claimRoom(id: string, pin: string, name: string, auth: AuthOpts) {
+  return request<RoomAccess>(`/api/sessions/${id}/claim`, {
+    method: "POST",
+    body: JSON.stringify({ pin, name }),
+    ...auth,
+  });
+}
+
+/** Link + PIN: opens the invited person's room for a while. */
+export function unlockRoom(id: string, pin: string, auth: AuthOpts) {
+  return request<RoomAccess>(`/api/sessions/${id}/unlock`, {
+    method: "POST",
+    body: JSON.stringify({ pin }),
+    ...auth,
+  });
+}
+
+export function acceptConsent(id: string, auth: AuthOpts) {
+  return request<Session>(`/api/sessions/${id}/consent`, { method: "POST", ...auth });
+}
+
+/** Stop the room for both people. */
+export function leaveSession(id: string, auth: AuthOpts) {
+  return request<Session>(`/api/sessions/${id}/leave`, { method: "POST", ...auth });
+}
+
+/** Pause the room and flag it for the Mediator team. */
+export function askForPerson(id: string, auth: AuthOpts) {
+  return request<Session>(`/api/sessions/${id}/human`, { method: "POST", ...auth });
 }
 
 export function fetchSession(id: string, auth: AuthOpts) {
@@ -67,10 +173,28 @@ export function sendMessage(id: string, content: string, auth: AuthOpts) {
   });
 }
 
-export function markReady(id: string, ready: boolean, auth: AuthOpts) {
+export function draftShare(id: string, auth: AuthOpts) {
+  return request<ShareDraft>(`/api/sessions/${id}/share/draft`, { method: "POST", ...auth });
+}
+
+export function approveShare(id: string, text: string, auth: AuthOpts) {
+  return request<Session>(`/api/sessions/${id}/share/approve`, {
+    method: "POST",
+    body: JSON.stringify({ text }),
+    ...auth,
+  });
+}
+
+/** Retry building the joint view once both people have shared. */
+export function retryJoint(id: string, auth: AuthOpts) {
+  return request<Session>(`/api/sessions/${id}/joint`, { method: "POST", ...auth });
+}
+
+/** Withdraw the approved share and readiness, reopening private chat. */
+export function withdrawShare(id: string, auth: AuthOpts) {
   return request<Session>(`/api/sessions/${id}/ready`, {
     method: "POST",
-    body: JSON.stringify({ ready }),
+    body: JSON.stringify({ ready: false }),
     ...auth,
   });
 }
@@ -79,9 +203,94 @@ export function fetchSummary(id: string, auth: AuthOpts) {
   return request<JointSummary>(`/api/sessions/${id}/summary`, { ...auth });
 }
 
-export function markResolved(id: string, auth: AuthOpts) {
-  return request<Session>(`/api/sessions/${id}/resolve`, {
+export function fetchJoint(id: string, auth: AuthOpts) {
+  return request<JointState>(`/api/sessions/${id}/joint`, { ...auth });
+}
+
+export function suggestIdea(id: string, text: string, auth: AuthOpts) {
+  return request<JointState>(`/api/sessions/${id}/ideas`, {
     method: "POST",
+    body: JSON.stringify({ text }),
     ...auth,
   });
+}
+
+export function respondToIdea(id: string, ideaId: string, response: IdeaResponse, note: string | null, auth: AuthOpts) {
+  return request<JointState>(`/api/sessions/${id}/ideas/${ideaId}/response`, {
+    method: "POST",
+    body: JSON.stringify({ response, note }),
+    ...auth,
+  });
+}
+
+export function draftAgreement(id: string, auth: AuthOpts) {
+  return request<JointState>(`/api/sessions/${id}/agreement/draft`, { method: "POST", ...auth });
+}
+
+/** checkinDays: days until this person's private check-in (0 = none, null = default). */
+export function signAgreement(id: string, version: number, checkinDays: number | null, auth: AuthOpts) {
+  return request<JointState>(`/api/sessions/${id}/agreement/sign`, {
+    method: "POST",
+    body: JSON.stringify(checkinDays === null ? { version } : { version, checkin_days: checkinDays }),
+    ...auth,
+  });
+}
+
+export function setLanguage(id: string, language: Language, auth: AuthOpts) {
+  return request<Session>(`/api/sessions/${id}/language`, {
+    method: "POST",
+    body: JSON.stringify({ language }),
+    ...auth,
+  });
+}
+
+/** The other person's approved words, with a translation for this person when one could be made. */
+export function fetchTranslation(id: string, language: Language, auth: AuthOpts) {
+  return request<Translation>(`/api/sessions/${id}/translation?language=${language}`, { ...auth });
+}
+
+/** Private "think it through" questions about one idea. */
+export function thinkItThrough(id: string, ideaId: string, auth: AuthOpts) {
+  return request<JointState>(`/api/sessions/${id}/ideas/${ideaId}/think`, { method: "POST", ...auth });
+}
+
+export function fetchFollowUp(id: string, auth: AuthOpts) {
+  return request<FollowUp>(`/api/sessions/${id}/followup`, { ...auth });
+}
+
+export function answerFollowUp(id: string, answers: CheckInAnswers, auth: AuthOpts) {
+  return request<FollowUp>(`/api/sessions/${id}/followup`, {
+    method: "POST",
+    body: JSON.stringify(answers),
+    ...auth,
+  });
+}
+
+/** Open the joint session again after a check-in. */
+export function reopenJoint(id: string, auth: AuthOpts) {
+  return request<JointState>(`/api/sessions/${id}/reopen`, { method: "POST", ...auth });
+}
+
+/** Person B keeps this room in their signed-in account's chats. */
+export function saveToMyChats(id: string, auth: AuthOpts) {
+  return request<Session>(`/api/sessions/${id}/save`, { method: "POST", ...auth });
+}
+
+export function removeFromMyChats(id: string, auth: AuthOpts) {
+  return request<Session>(`/api/sessions/${id}/save`, { method: "DELETE", ...auth });
+}
+
+/** Person A replaces the invite link. Anything already on the other side is deleted. */
+export function rotateInvite(id: string, auth: AuthOpts) {
+  return request<Session>(`/api/sessions/${id}/invite/rotate`, { method: "POST", ...auth });
+}
+
+/** Delete this person's private chat, notes and drafts. */
+export function deleteMyData(id: string, auth: AuthOpts) {
+  return request<Session>(`/api/sessions/${id}/delete-my-data`, { method: "POST", ...auth });
+}
+
+/** Person A deletes the whole room for both people. */
+export function deleteRoom(id: string, auth: AuthOpts) {
+  return request<{ deleted: boolean }>(`/api/sessions/${id}`, { method: "DELETE", ...auth });
 }

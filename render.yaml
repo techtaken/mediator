@@ -1,0 +1,75 @@
+# Render Blueprint: the FastAPI backend plus the scheduled jobs.
+# The frontend deploys to Vercel (see docs/DEPLOY.md). Secrets marked
+# `sync: false` are entered in the Render dashboard, never committed.
+services:
+  - type: web
+    name: mediator-api
+    runtime: docker
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    region: singapore
+    healthCheckPath: /health
+    # Keep one instance: rate limits and live-update streams are in-process.
+    numInstances: 1
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: SUPABASE_JWKS_URL
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3.5-flash-lite
+      - key: CORS_ORIGINS
+        sync: false # e.g. https://mediator.vercel.app
+      - key: FRONTEND_BASE_URL
+        sync: false # used to build invite links
+      - key: ADMIN_EMAILS
+        sync: false
+      - key: JOB_TOKEN
+        generateValue: true
+      - key: RETENTION_DAYS
+        value: "180"
+      - key: AUDIT_REASON_RETENTION_DAYS
+        value: "30"
+      - key: INVITE_TTL_DAYS
+        value: "14"
+      - key: FOLLOWUP_DEFAULT_DAYS
+        value: "14"
+
+  # Daily: remove rooms past RETENTION_DAYS, clear old audit reasoning.
+  - type: cron
+    name: mediator-retention
+    runtime: python
+    schedule: "17 21 * * *" # 02:47 IST
+    buildCommand: "true"
+    startCommand: >-
+      curl -fsS -X POST -H "X-Job-Token: $JOB_TOKEN" "$API_URL/api/jobs/retention"
+    envVars:
+      - key: API_URL
+        sync: false # the mediator-api public URL
+      - key: JOB_TOKEN
+        fromService:
+          type: web
+          name: mediator-api
+          envVarKey: JOB_TOKEN
+
+  # Hourly: open check-ins that have come due.
+  - type: cron
+    name: mediator-followups
+    runtime: python
+    schedule: "7 * * * *"
+    buildCommand: "true"
+    startCommand: >-
+      curl -fsS -X POST -H "X-Job-Token: $JOB_TOKEN" "$API_URL/api/jobs/followups"
+    envVars:
+      - key: API_URL
+        sync: false
+      - key: JOB_TOKEN
+        fromService:
+          type: web
+          name: mediator-api
+          envVarKey: JOB_TOKEN

@@ -32,6 +32,21 @@ body {
   color: var(--ink);
 }
 
+/* Steam over the chai on the home page: slow, and still for people who prefer less motion. */
+.calm-steam {
+  animation: calm-steam 4.5s ease-in-out infinite;
+}
+.calm-steam-late {
+  animation-delay: 2.2s;
+}
+@keyframes calm-steam {
+  0%, 100% { opacity: 0.15; transform: translateY(2px); }
+  50% { opacity: 0.75; transform: translateY(-3px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .calm-steam { animation: none; opacity: 0.5; }
+}
+
 ::selection {
   background: #e8c9a8;
 }

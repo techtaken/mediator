@@ -1,25 +1,50 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { FormEvent, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { FormEvent, Suspense, useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
+import { useAuth } from "@/lib/useAuth";
+
+/** Only a path on this site, so a crafted link can't send people elsewhere after signing in. */
+function safeNext(value: string | null) {
+  return value && value.startsWith("/") && !value.startsWith("//") && !value.startsWith("/\\") ? value : null;
+}
 
 export default function LoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <LoginInner />
+    </Suspense>
+  );
+}
+
+function LoginInner() {
   const router = useRouter();
+  const next = safeNext(useSearchParams().get("next"));
   const [email, setEmail] = useState("");
   const [otp, setOtp] = useState("");
   const [sent, setSent] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const { session } = useAuth();
+
+  // Opening the email link signs this browser in from another tab. This tab
+  // notices and moves on, so nobody has to find their way back.
+  useEffect(() => {
+    if (sent && session) router.replace(next ?? "/");
+  }, [sent, session, next, router]);
 
   async function sendCode(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
     setError("");
+    // The email holds a link (and, once the template allows it, a code). The
+    // link brings people back to where they were, e.g. the room they're saving.
+    const back = next ? `${next}${next.includes("?") ? "&" : "?"}from=signin` : "/";
     const { error: sendError } = await getSupabase().auth.signInWithOtp({
       email,
-      options: { shouldCreateUser: true },
+      options: { shouldCreateUser: true, emailRedirectTo: `${window.location.origin}${back}` },
     });
     setBusy(false);
     if (sendError) {
@@ -43,7 +68,7 @@ export default function LoginPage() {
       setError(verifyError.message);
       return;
     }
-    router.push("/");
+    router.push(next ?? "/");
     router.refresh();
   }
 
@@ -56,8 +81,9 @@ export default function LoginPage() {
         Sign in with email
       </h1>
       <p className="mt-3 text-muted">
-        We send a one-time code. Person A needs this to open a room. Person B can join from the
-        invite link without an account.
+        {next
+          ? "We'll email you a sign-in link. It brings you back to your conversation to save it."
+          : "We'll email you a sign-in link. Person A needs this to open a room. Person B can join from the invite link without an account."}
       </p>
 
       {!sent ? (
@@ -77,14 +103,20 @@ export default function LoginPage() {
             disabled={busy}
             className="w-full rounded-full bg-teal px-5 py-3.5 text-card disabled:opacity-60"
           >
-            {busy ? "Sending…" : "Send code"}
+            {busy ? "Sending…" : "Email me a sign-in link"}
           </button>
         </form>
       ) : (
         <form onSubmit={verify} className="mt-10 space-y-4">
-          <p className="text-sm text-muted">Code sent to {email}</p>
+          <div className="rounded-2xl bg-card px-4 py-3.5 text-[15px] leading-relaxed text-ink shadow-[0_1px_0_rgba(36,28,22,0.08)]">
+            <p className="font-medium">Check your email</p>
+            <p className="mt-1 text-muted">
+              We sent a sign-in link to {email}. Open it on this phone or computer. Once you&apos;re signed in, this
+              page takes you {next ? "back to your conversation" : "to your rooms"} by itself.
+            </p>
+          </div>
           <label className="block text-sm text-muted">
-            One-time code
+            If your email shows a 6-digit code instead, enter it here
             <input
               inputMode="numeric"
               required
@@ -98,7 +130,7 @@ export default function LoginPage() {
             disabled={busy}
             className="w-full rounded-full bg-teal px-5 py-3.5 text-card disabled:opacity-60"
           >
-            {busy ? "Checking…" : "Enter room access"}
+            {busy ? "Checking…" : "Sign in"}
           </button>
         </form>
       )}

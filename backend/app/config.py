@@ -18,8 +18,56 @@ class Settings(BaseSettings):
     supabase_jwks_url: str | None = None
     gemini_api_key: str
     gemini_model: str = "gemini-3.5-flash-lite"
+    gemini_timeout_ms: int = 30000
+    # Estimated USD price per million tokens, only used for the admin cost
+    # estimate. Check current Gemini pricing for the model you run.
+    gemini_price_input_per_m: float = 0.10
+    gemini_price_output_per_m: float = 0.40
     cors_origins: str = "http://localhost:3000"
+    # Comma-separated emails allowed into /api/admin. Empty means no admins.
+    admin_emails: str = ""
     frontend_base_url: str = "http://localhost:3000"
+
+    # Abuse protection: in-process limits, per instance. 0 disables a limit.
+    rate_limit_enabled: bool = True
+    rate_limit_sessions_per_hour: int = 10
+    rate_limit_messages_per_minute: int = 12
+    rate_limit_writes_per_minute: int = 30
+    # An unused invite link stops working after this many days.
+    invite_ttl_days: int = 14
+    # The invited person's PIN: how long a correct one opens the room for, and
+    # how many wrong tries lock it for how long.
+    pin_access_ttl_minutes: int = 120
+    pin_max_attempts: int = 5
+    pin_lock_minutes: int = 15
+    # Ask the orchestrator model where each private-chat turn goes. Off: the
+    # same private-chat rules are worked out in code, which saves a model call
+    # (several seconds) per reply. The joint stage doesn't use this.
+    private_orchestrator: bool = False
+
+    # Encryption at rest for private text (see app/crypto.py). 32 random bytes,
+    # base64. Required: the server won't start without it. Losing it makes
+    # every encrypted message unreadable, so keep a copy somewhere safe.
+    data_encryption_key: str = ""
+    # Earlier keys, comma-separated, still used to read older rows after a rotation.
+    data_encryption_old_keys: str = ""
+
+    # Data retention. 0 disables the purge.
+    retention_days: int = 180
+    # Free-text agent reasoning in the audit table is cleared after this many days.
+    audit_reason_retention_days: int = 30
+    # Shared secret a scheduler sends as X-Job-Token to call /api/jobs/*. Empty
+    # means only signed-in admins can run jobs.
+    job_token: str = ""
+
+    # Default days until the post-agreement check-in.
+    followup_default_days: int = 14
+    # Longest a live-update stream stays open before the browser reconnects.
+    sse_max_seconds: int = 300
+
+    @property
+    def admin_email_set(self) -> set[str]:
+        return {email.strip().lower() for email in self.admin_emails.split(",") if email.strip()}
 
     @property
     def jwks_url(self) -> str:
