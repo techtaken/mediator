@@ -8,6 +8,7 @@ import { ConsentCard } from "@/components/room/ConsentCard";
 import { HaltPanel } from "@/components/room/HaltPanel";
 import { JointView } from "@/components/room/JointView";
 import { ChoosePin, EnterPin } from "@/components/room/PinScreens";
+import { AppShell } from "@/components/AppShell";
 import { RoomMenu, type RoomAction } from "@/components/room/RoomMenu";
 import { SaveToChats } from "@/components/room/SaveToChats";
 import { ShareReview } from "@/components/room/ShareReview";
@@ -43,6 +44,7 @@ import {
 import { subscribeRoom } from "@/lib/live";
 import type { ChatMessage, FollowUp, JointState, JointSummary, Language, Session } from "@/lib/types";
 import { useAuth } from "@/lib/useAuth";
+import { useProfile } from "@/lib/useProfile";
 
 // Polling is the fallback; with a live stream connected it only runs as a slow safety net.
 const POLL_MS = 2500;
@@ -94,9 +96,12 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
   const { id } = use(params);
   const router = useRouter();
   const { accessToken, loading: authLoading, user } = useAuth();
+  const profile = useProfile(accessToken);
   // Invite tokens live in sessionStorage, so read them only on the client.
   const onClient = useSyncExternalStore(noopSubscribe, () => true, () => false);
   const inviteToken = onClient ? getInviteToken(id) : null;
+  // Back from the sign-in email link, on the way to saving this room.
+  const fromSignIn = onClient && new URLSearchParams(window.location.search).get("from") === "signin";
   const roomAccess = onClient ? getRoomAccess(id) : null;
   const auth = useMemo<AuthOpts>(() => ({ accessToken, inviteToken, roomAccess }), [accessToken, inviteToken, roomAccess]);
 
@@ -317,7 +322,10 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
   if (pinGate) {
     return (
       <main className="mx-auto max-w-lg">
-        <EnterPin onEnter={enterPin} fromChats={!auth.inviteToken && Boolean(auth.accessToken)} />
+        <EnterPin
+          onEnter={enterPin}
+          reason={fromSignIn ? "signin" : !auth.inviteToken && auth.accessToken ? "chats" : "invite"}
+        />
       </main>
     );
   }
@@ -421,7 +429,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     body = <Chat messages={shownMessages} thinking={Boolean(pending)} />;
   }
 
-  return (
+  const room = (
     <main className="mx-auto flex h-[100dvh] w-full max-w-lg flex-col">
       <header className="border-b border-ink/10 px-4 pt-3 pb-3">
         <div className="flex items-center justify-between gap-3">
@@ -608,5 +616,14 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
         />
       ) : null}
     </main>
+  );
+
+  // Signed in (Person A, or Person B with an account): their conversations sit beside the room.
+  return accessToken ? (
+    <AppShell accessToken={accessToken} name={profile.name} activeRoomId={id} ownMobileHeader>
+      {room}
+    </AppShell>
+  ) : (
+    room
   );
 }

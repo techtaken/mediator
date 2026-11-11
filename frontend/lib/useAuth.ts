@@ -17,7 +17,23 @@ export function useAuth() {
     const { data: sub } = supabase.auth.onAuthStateChange((_event, next) => {
       setSession(next);
     });
-    return () => sub.subscription.unsubscribe();
+    // Signing in from the email link usually happens in another tab. Pick it
+    // up when that tab saves the session, or when this one is looked at again.
+    const recheck = () => {
+      if (document.visibilityState === "visible") {
+        void supabase.auth.getSession().then(({ data }) => setSession(data.session));
+      }
+    };
+    const onStorage = (event: StorageEvent) => {
+      if (event.key?.startsWith("sb-")) recheck();
+    };
+    document.addEventListener("visibilitychange", recheck);
+    window.addEventListener("storage", onStorage);
+    return () => {
+      sub.subscription.unsubscribe();
+      document.removeEventListener("visibilitychange", recheck);
+      window.removeEventListener("storage", onStorage);
+    };
   }, []);
 
   return {

@@ -33,8 +33,8 @@ export function useMyRooms(accessToken: string | null) {
   return rooms;
 }
 
-/** Where the room stands, in the words of the person who opened it. */
-function statusOf(room: RoomSummary): { label: string; tone: string } {
+/** Where the room stands, from this person's side. */
+export function statusOf(room: RoomSummary): { label: string; tone: string } {
   switch (room.status) {
     case "halted":
       return { label: "Paused", tone: "bg-ink/10 text-muted" };
