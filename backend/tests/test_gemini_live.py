@@ -1,7 +1,7 @@
 import pytest
 
 from app.agents.llm import call_agent, dumps
-from app.agents.pipeline import CAUCUS_FALLBACK, NEUTRAL_FALLBACK, handle_party_turn
+from app.agents.pipeline import NEUTRAL_FALLBACK, handle_party_turn
 from app.agents.prompts import language_instruction
 from app.agents.state import empty_private, new_shared_state, shared_view
 from tests.conftest import has_real_gemini_key
@@ -91,4 +91,4 @@ def test_full_turn_against_real_api():
     assert {"SAFETY_GUARDIAN", "ORCHESTRATOR", "CAUCUS", "NEUTRALITY_AUDITOR"} <= roles
     assert result.halt is False
     assert result.reply.strip()
-    assert result.reply not in {NEUTRAL_FALLBACK, CAUCUS_FALLBACK}, "reply is a canned fallback line"
+    assert result.reply != NEUTRAL_FALLBACK, "reply is a canned fallback line"

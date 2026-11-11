@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextvars
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Callable, TypeVar
@@ -43,8 +44,13 @@ STAGES = {
 
 # Sent when no draft survives the outbound checks. Deliberately content-free.
 NEUTRAL_FALLBACK = "Thank you for telling me. Take your time. What feels most important to you right now?"
-# Sent when the caucus agent itself fails.
-CAUCUS_FALLBACK = "I heard you. Say a little more about what you need to feel this is resolved."
+
+
+class MediatorUnavailable(RuntimeError):
+    """No reply could be written or checked (quota, overload, network, unusable
+    output). Nothing is sent: a stock line would look like a real reply, so the
+    person is asked to send their message again instead."""
+
 
 CARE_NOTES = {
     1: "Go gently. Check that they are choosing freely to continue, and keep the pace slow.",
@@ -244,16 +250,12 @@ def handle_party_turn(
             "LANGUAGE": language_instruction(language),
         }
 
-    def run_caucus(instruction: str) -> dict[str, Any]:
+    def run_caucus(instruction: str) -> dict[str, Any] | None:
         try:
             return caller("CAUCUS", caucus_mapping(instruction))
         except Exception:
             logger.exception("caucus agent failed")
-            return {
-                "reply_to_party": CAUCUS_FALLBACK,
-                "state_updates": {},
-                "share_proposal": {"text": None, "approved_by_party": False},
-            }
+            return None
 
     # Almost every message is fine, so the next step starts at the same time,
     # as if the check came back clean: the orchestrator, or without it the
@@ -295,7 +297,10 @@ def handle_party_turn(
         return _handoff(state, party, plan, caller)
 
     instruction = _instruction(plan, severity)
+    # A failed early reply gets one more try here.
     caucus = early_caucus if early_caucus is not None and severity == 0 else run_caucus(instruction)
+    if caucus is None:
+        raise MediatorUnavailable("no reply could be written")
 
     def regenerate(feedback: str) -> str:
         retry = caller(
@@ -303,14 +308,27 @@ def handle_party_turn(
         )
         return str(retry.get("reply_to_party") or "")
 
+    reply = str(caucus.get("reply_to_party") or "").strip()
+    own_name = ((view.get("parties") or {}).get(party) or {}).get("name")
+    if _talks_about_the_speaker(reply, party, own_name):
+        # The model sometimes narrates ("A's account describes...") instead of
+        # talking to the person. One rewrite; if that slips too, it goes out.
+        try:
+            rewrite = regenerate(SECOND_PERSON_FEEDBACK).strip()
+        except Exception:
+            logger.exception("second-person rewrite failed")
+            rewrite = ""
+        reply = rewrite or reply
+
     draft = _guard_outgoing(
-        str(caucus.get("reply_to_party") or "").strip(),
+        reply,
         state,
         plan,
         party,
         caller,
         regenerate,
         view=party_view(state, party),
+        unchecked_is_unavailable=True,
     )
     apply_caucus_updates(state, private, party, caucus.get("state_updates") or {})
     if caucus.get("private_notes"):
@@ -324,6 +342,32 @@ def handle_party_turn(
         agent=f"CAUCUS_{party}",
         extras={"caucus": caucus},
     )
+
+
+SECOND_PERSON_FEEDBACK = (
+    'it talked about the person instead of to them. Speak to them directly as "you". '
+    'Never use their name or the labels "A", "B" or "party A".'
+)
+
+# Narration about someone: the internal labels used like names ("A's", "party A",
+# "A feels"), never the article ("A lot of...").
+_NARRATING_VERBS = (
+    "says|said|feels|felt|mentions|mentioned|describes|described|wants|wanted|seems|seemed|"
+    "thinks|thought|believes|believed|explains|explained|shares|shared|expresses|expressed|is|was|has|had"
+)
+
+
+def _talks_about_the_speaker(reply: str, party: PartyKey, own_name: str | None) -> bool:
+    """Whether a private reply refers to anyone by internal label, or to the
+    person it's talking to by their own name, instead of saying "you"."""
+    for label in ("A", "B"):
+        if re.search(rf"\b{label}'s\b|\bparty {label}\b|\bperson {label}\b|\b{label} (?:{_NARRATING_VERBS})\b", reply):
+            return True
+    if own_name:
+        name = re.escape(own_name)
+        if re.search(rf"\b{name}'s\b|\b{name} (?:{_NARRATING_VERBS})\b", reply, flags=re.IGNORECASE):
+            return True
+    return False
 
 
 def _instruction(plan: dict[str, Any], severity: int) -> str:
@@ -558,13 +602,15 @@ def _guard_outgoing(
     caller: AgentCaller,
     regenerate: Callable[[str], str] | None = None,
     view: dict[str, Any] | None = None,
+    unchecked_is_unavailable: bool = False,
 ) -> str:
     """Outbound safety + neutrality checks.
 
     A blocked draft is regenerated once with feedback; if that fails too, a
     neutral fallback is sent. Crisis helplines are never used as a stand-in for
-    a biased or unsafe draft. At least one checker must run successfully, or the
-    fallback is sent.
+    a biased or unsafe draft. At least one checker must run successfully, or
+    nothing unchecked goes out: the fallback is sent, or with
+    `unchecked_is_unavailable` MediatorUnavailable is raised.
     """
     if not draft:
         draft = "I am here. Tell me what matters most."
@@ -608,6 +654,8 @@ def _guard_outgoing(
 
     if audit is None:
         if not safety_ran:
+            if unchecked_is_unavailable:
+                raise MediatorUnavailable("no check on the reply could run")
             append_audit(state, {"stage": state.get("stage"), "agent": "NEUTRALITY_AUDITOR", "reason": "no outbound check available"})
             return NEUTRAL_FALLBACK
         return draft

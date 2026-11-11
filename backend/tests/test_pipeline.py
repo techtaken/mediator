@@ -7,6 +7,7 @@ from pydantic import ValidationError
 from app.agents import llm
 from app.agents.pipeline import (
     NEUTRAL_FALLBACK,
+    MediatorUnavailable,
     check_share,
     draft_share,
     handle_party_turn,
@@ -323,9 +324,10 @@ def test_safety_call_failure_continues_with_care():
     assert result.reply.startswith("It sounds like trust matters")
 
 
-def test_outbound_falls_back_when_no_checker_runs():
+def test_nothing_unchecked_goes_out_when_no_checker_runs():
     agents = FakeAgents(SAFETY_GUARDIAN=RuntimeError("down"), NEUTRALITY_AUDITOR=RuntimeError("down"))
-    assert _turn(agents).reply == NEUTRAL_FALLBACK
+    with pytest.raises(MediatorUnavailable):
+        _turn(agents)
 
 
 def test_llm_safety_halt_always_includes_helplines():

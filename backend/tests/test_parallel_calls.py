@@ -11,7 +11,8 @@ import time
 import pytest
 
 from app.agents import telemetry
-from app.agents.pipeline import ASSUMED_CLEAN_SAFETY, NEUTRAL_FALLBACK, _side_by_side, handle_party_turn
+from app.agents.llm import QuotaExceeded
+from app.agents.pipeline import ASSUMED_CLEAN_SAFETY, NEUTRAL_FALLBACK, MediatorUnavailable, _side_by_side, handle_party_turn
 from app.agents.state import empty_private, new_shared_state
 from tests.test_pipeline import SAFE, FakeAgents
 
@@ -277,7 +278,7 @@ def test_a_reply_still_blocked_after_a_rewrite_falls_back():
     assert _turn(agents).reply == NEUTRAL_FALLBACK
 
 
-def test_if_both_reply_checks_fail_the_neutral_fallback_goes_out():
+def test_if_both_reply_checks_fail_no_reply_goes_out():
     def broken(mapping):
         raise RuntimeError("down")
 
@@ -285,7 +286,54 @@ def test_if_both_reply_checks_fail_the_neutral_fallback_goes_out():
         SAFETY_GUARDIAN=lambda mapping: broken(mapping) if _direction(mapping) == "outbound" else dict(SAFE),
         NEUTRALITY_AUDITOR=broken,
     )
+    with pytest.raises(MediatorUnavailable):
+        _turn(agents)
+
+
+# --- When no reply can be written ---------------------------------------------------
+
+
+@pytest.mark.parametrize("use_orchestrator", [False, True])
+@pytest.mark.parametrize("failure", [QuotaExceeded("quota"), RuntimeError("overloaded")])
+def test_no_stock_line_goes_out_when_the_reply_cannot_be_written(failure, use_orchestrator):
+    agents = FakeAgents(CAUCUS=failure)
+    with pytest.raises(MediatorUnavailable):
+        _turn(agents, use_orchestrator=use_orchestrator)
+
+
+def test_an_early_reply_that_failed_gets_one_more_try():
+    agents = FakeAgents()
+    tries = {"count": 0}
+
+    def caucus(mapping):
+        tries["count"] += 1
+        if tries["count"] == 1:
+            raise RuntimeError("blip")
+        return agents.default("CAUCUS", mapping)
+
+    agents.overrides["CAUCUS"] = caucus
+    assert _turn(agents).reply.startswith("It sounds like trust matters")
+    assert tries["count"] == 2
+
+
+def test_a_reply_judged_unsafe_still_gets_the_neutral_line():
+    """That's a real decision, not an outage, so it isn't treated as one."""
+    agents = FakeAgents(
+        SAFETY_GUARDIAN=lambda mapping: {**SAFE, "block_outgoing_message": True}
+        if _direction(mapping) == "outbound"
+        else dict(SAFE)
+    )
     assert _turn(agents).reply == NEUTRAL_FALLBACK
+
+
+def test_a_safety_stop_still_works_when_replies_cannot_be_written():
+    halt = {"flag": True, "severity": 3, "action": "HALT_AND_REFER", "message_to_affected_party": "Please reach out now."}
+    agents = FakeAgents(
+        SAFETY_GUARDIAN=lambda mapping: dict(halt) if _direction(mapping) == "inbound" else dict(SAFE),
+        CAUCUS=QuotaExceeded("quota"),
+    )
+    result = _turn(agents)
+    assert result.halt and result.reply.startswith("Please reach out now.")
 
 
 # --- Call stats ---------------------------------------------------------------------
@@ -320,3 +368,64 @@ def test_calls_starting_together_share_one_client():
         assert first is second and len(built) == 1
     finally:
         gemini_client._build_client.cache_clear()
+
+
+# --- Talking to the person, not about them --------------------------------------
+
+
+@pytest.mark.parametrize(
+    "slip",
+    [
+        "A's account describes feeling frustrated about the parking spot.",
+        "In A's account, the parking spot feels like respect.",
+        "A feels unheard. What would help?",
+        "Party A wants the spot back.",
+        "nk feels unheard when this happens.",
+        "B's view matters too.",
+    ],
+)
+def test_a_reply_that_talks_about_the_person_is_rewritten(slip):
+    state = new_shared_state("D-1")
+    state["parties"]["A"]["name"] = "nk"
+    agents = FakeAgents()
+
+    def caucus(mapping):
+        reply = agents.default("CAUCUS", mapping)
+        reply["reply_to_party"] = "What matters most to you here?" if "REWRITE" in mapping["INSTRUCTION"] else slip
+        return reply
+
+    agents.overrides["CAUCUS"] = caucus
+    result = _turn(agents, state=state)
+    assert result.reply == "What matters most to you here?"
+    assert '"you"' in agents.of("CAUCUS")[-1]["mapping"]["INSTRUCTION"]
+
+
+@pytest.mark.parametrize(
+    "fine",
+    [
+        "A lot of people feel this way. What would help you?",
+        "A small step could be talking about it calmly. What do you think?",
+        "What would you like Ramprasad to understand?",
+    ],
+)
+def test_a_reply_that_talks_to_the_person_is_left_alone(fine):
+    state = new_shared_state("D-1")
+    state["parties"]["A"]["name"] = "nk"
+    agents = FakeAgents()
+
+    def caucus(mapping):
+        reply = agents.default("CAUCUS", mapping)
+        reply["reply_to_party"] = fine
+        return reply
+
+    agents.overrides["CAUCUS"] = caucus
+    assert _turn(agents, state=state).reply == fine
+    assert len(agents.of("CAUCUS")) == 1
+
+
+def test_the_mediator_is_told_to_say_you():
+    agents = FakeAgents()
+    _turn(agents)
+    prompt = " ".join(agents.of("CAUCUS")[0]["prompt"].split())
+    assert 'Talk to this person directly, as "you"' in prompt and "never use their name" in prompt
+
