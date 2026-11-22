@@ -18,15 +18,28 @@ export function useMyRooms(accessToken: string | null) {
   useEffect(() => {
     if (!accessToken) return;
     let cancelled = false;
-    fetchMyRooms(accessToken)
-      .then((next) => {
-        if (!cancelled) setRooms(next);
-      })
-      .catch(() => {
-        if (!cancelled) setRooms("failed");
-      });
+    const load = (initial: boolean) =>
+      fetchMyRooms(accessToken)
+        .then((next) => {
+          if (!cancelled) setRooms(next);
+        })
+        .catch(() => {
+          // A failed refresh keeps the list already shown.
+          if (!cancelled && initial) setRooms("failed");
+        });
+    void load(true);
+    // Coming back to the tab, and every minute while open, so "is ready" shows up.
+    const onVisible = () => {
+      if (!document.hidden) void load(false);
+    };
+    const timer = setInterval(() => {
+      if (!document.hidden) void load(false);
+    }, 60_000);
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       cancelled = true;
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [accessToken]);
 
@@ -51,6 +64,9 @@ export function statusOf(room: RoomSummary): { label: string; tone: string } {
       if (room.invite_expired) return { label: "Invite link expired", tone: "bg-terracotta/10 text-terracotta" };
       if (!room.other_joined) {
         return { label: `Waiting for ${room.other_name ?? "them"} to join`, tone: "bg-ink/[0.06] text-muted" };
+      }
+      if (theirsReady && !mineReady) {
+        return { label: `${room.other_name ?? "They"} ${room.other_name ? "is" : "are"} ready`, tone: "bg-terracotta text-card" };
       }
       if (mineReady && !theirsReady) {
         return { label: `Waiting for ${room.other_name ?? "them"}`, tone: "bg-ink/[0.06] text-muted" };

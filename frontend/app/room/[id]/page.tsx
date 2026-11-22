@@ -45,6 +45,7 @@ import { subscribeRoom } from "@/lib/live";
 import type { ChatMessage, FollowUp, JointState, JointSummary, Language, Session } from "@/lib/types";
 import { useAuth } from "@/lib/useAuth";
 import { useProfile } from "@/lib/useProfile";
+import { useTabAlert } from "@/lib/useTabAlert";
 
 // Polling is the fallback; with a live stream connected it only runs as a slow safety net.
 const POLL_MS = 2500;
@@ -288,6 +289,31 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
       setTimeout(() => setCopied(false), 2000);
     } catch {
       setError("Couldn't copy. Long-press the WhatsApp button to share instead.");
+    }
+  }
+
+  // The other person has shared and is waiting while this person still talks.
+  const theyAreWaiting =
+    session?.status === "intake" &&
+    !session.my_share &&
+    Boolean(session.party === "user_a" ? session.user_b_ready : session.user_a_ready);
+  const waitingName = session?.other_name ?? "The other person";
+  useTabAlert(theyAreWaiting ? `${waitingName} is ready` : null);
+  // Read once in the browser; the page only renders the room there.
+  const [readyNoticeClosed, setReadyNoticeClosed] = useState(() => {
+    try {
+      return typeof window !== "undefined" && localStorage.getItem(`ready-notice-closed:${id}`) === "1";
+    } catch {
+      // Storage blocked (private window): the notice just shows again next time.
+      return false;
+    }
+  });
+  function closeReadyNotice() {
+    setReadyNoticeClosed(true);
+    try {
+      localStorage.setItem(`ready-notice-closed:${id}`, "1");
+    } catch {
+      // See above.
     }
   }
 
@@ -537,6 +563,30 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
           </p>
         ) : null}
       </header>
+
+      {theyAreWaiting && !needsPin && !needsConsent && !readyNoticeClosed ? (
+        <div
+          role="status"
+          className="mx-4 mt-3 flex items-start gap-3 rounded-2xl bg-terracotta/10 px-4 py-3 text-sm leading-relaxed text-ink"
+        >
+          <div className="min-w-0 flex-1">
+            <p className="font-medium text-terracotta">{waitingName} has shared their side and is ready.</p>
+            <p className="mt-0.5 text-muted">
+              Take the time you need. When you&apos;ve said what matters, tap &ldquo;I&apos;m ready to share&rdquo;.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={closeReadyNotice}
+            aria-label="Close this notice"
+            className="-mt-1 -mr-2 shrink-0 rounded-full p-2 text-muted hover:bg-terracotta/10 hover:text-ink"
+          >
+            <svg viewBox="0 0 20 20" width="14" height="14" aria-hidden="true">
+              <path d="M5 5l10 10M15 5L5 15" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+          </button>
+        </div>
+      ) : null}
 
       {session?.my_data_deleted && session.status !== "halted" ? (
         <p className="mx-4 mt-3 rounded-2xl bg-teal/10 px-3 py-2 text-sm text-teal">
