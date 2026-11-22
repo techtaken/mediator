@@ -28,7 +28,6 @@ function LoginInner() {
   const router = useRouter();
   const next = safeNext(useSearchParams().get("next"));
   const [email, setEmail] = useState("");
-  const [otp, setOtp] = useState("");
   const [sent, setSent] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -63,7 +62,6 @@ function LoginInner() {
     event.preventDefault();
     setBusy(true);
     setError("");
-    // The email holds a link (and, once the template allows it, a code).
     const { error: sendError } = await getSupabase().auth.signInWithOtp({
       email,
       options: {
@@ -77,24 +75,6 @@ function LoginInner() {
       return;
     }
     setSent(true);
-  }
-
-  async function verify(event: FormEvent) {
-    event.preventDefault();
-    setBusy(true);
-    setError("");
-    const { error: verifyError } = await getSupabase().auth.verifyOtp({
-      email,
-      token: otp,
-      type: "email",
-    });
-    setBusy(false);
-    if (verifyError) {
-      setError(verifyError.message);
-      return;
-    }
-    router.push(next ?? "/");
-    router.refresh();
   }
 
   return (
@@ -168,33 +148,26 @@ function LoginInner() {
           </form>
         </>
       ) : (
-        <form onSubmit={verify} className="mt-10 space-y-4">
+        <div className="mt-10 space-y-4">
           <div className="rounded-2xl bg-card px-4 py-3.5 text-[15px] leading-relaxed text-ink shadow-[0_1px_0_rgba(36,28,22,0.08)]">
             <p className="font-medium">Check your email</p>
             <p className="mt-1 text-muted">
-              We sent a sign-in link to {email}. Open it on this phone or
-              computer. Once you&apos;re signed in, this page takes you{" "}
-              {next ? "back to your conversation" : "to your rooms"} by itself.
+              We sent a sign-in link to {email}. Open it on this phone or computer. Once you&apos;re signed in, this
+              page takes you {next ? "back to your conversation" : "to your rooms"} by itself.
             </p>
+            <p className="mt-2 text-sm text-muted">Can&apos;t find it? Check spam, or wait a minute before trying again.</p>
           </div>
-          <label className="block text-sm text-muted">
-            If your email shows a 6-digit code instead, enter it here
-            <input
-              inputMode="numeric"
-              required
-              value={otp}
-              onChange={(e) => setOtp(e.target.value)}
-              className="mt-2 w-full rounded-2xl border border-ink/10 bg-card px-4 py-3 text-base tracking-[0.3em] text-ink outline-none focus:border-terracotta"
-            />
-          </label>
-          {error ? <p className="text-sm text-terracotta">{error}</p> : null}
           <button
-            disabled={busy}
-            className="w-full rounded-full bg-teal px-5 py-3.5 text-card disabled:opacity-60"
+            type="button"
+            onClick={() => {
+              setSent(false);
+              setError("");
+            }}
+            className="w-full rounded-full px-5 py-2.5 text-sm text-muted underline-offset-4 hover:underline"
           >
-            {busy ? "Checking…" : "Sign in"}
+            Use a different email
           </button>
-        </form>
+        </div>
       )}
       <p className="mt-10 text-center text-xs text-muted">
         <Link href="/privacy" className="underline underline-offset-4">

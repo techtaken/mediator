@@ -15,8 +15,8 @@ function points(retentionDays: number, invitedAs: string | null | undefined): { 
     body: "The other person sees your name, but never your chat. They only see words you review and approve.",
   },
   {
-    title: "The Mediator team can see conversations",
-    body: "A small team can read rooms to keep the service safe and to help if you ask for a person. Each time they open a room, it's recorded.",
+    title: "Your chat is stored encrypted",
+    body: "The Mediator team can't read your private chat. To write replies, your messages are processed by Google's Gemini AI.",
   },
   {
     title: "You control your data",

@@ -143,14 +143,16 @@ export function AgreementCard({ agreement, agreedCount, otherName, onSign, onRed
             ) : (
               <p className="text-center text-sm text-muted">You&apos;ve signed. Waiting for {otherName ?? "them"} to sign.</p>
             )}
-            <button
-              type="button"
-              disabled={busy !== null}
-              onClick={() => void run("redraft", onRedraft)}
-              className="w-full rounded-full px-5 py-2.5 text-sm text-muted underline-offset-4 hover:underline disabled:opacity-50"
-            >
-              {busy === "redraft" ? "Redrafting…" : "Redraft (clears signatures)"}
-            </button>
+            {outOfDate ? (
+              <button
+                type="button"
+                disabled={busy !== null}
+                onClick={() => void run("redraft", onRedraft)}
+                className="w-full rounded-full px-5 py-2.5 text-sm text-muted underline-offset-4 hover:underline disabled:opacity-50"
+              >
+                {busy === "redraft" ? "Updating…" : "Update the draft to match your ideas (clears signatures)"}
+              </button>
+            ) : null}
           </div>
         ) : null}
       </div>
