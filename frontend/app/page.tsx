@@ -15,6 +15,10 @@ function SafetyNote() {
   return (
     <p className="mt-10 text-center text-xs leading-relaxed text-muted">
       Not for crisis, violence, or legal advice. If you are in danger, call 112.
+      <br />
+      <Link href="/privacy" className="underline underline-offset-4">
+        Privacy and terms
+      </Link>
     </p>
   );
 }
