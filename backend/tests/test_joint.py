@@ -252,12 +252,37 @@ def test_resolved_only_when_both_sign_the_same_version(room, as_party, agents):
     assert client.get("/api/sessions/sess_abc/joint").json()["agreement"]["fully_signed"] is True
 
 
-def test_redrafting_bumps_version_and_clears_signatures(room, as_party, agents):
+def test_both_people_get_the_same_draft(room, as_party, agents):
     _agree_on_first(as_party)
-    client.post("/api/sessions/sess_abc/agreement/draft")
+    as_party("user_a")
+    first = client.post("/api/sessions/sess_abc/agreement/draft").json()["agreement"]
     client.post("/api/sessions/sess_abc/agreement/sign", json={"version": 1})
-    redrafted = client.post("/api/sessions/sess_abc/agreement/draft").json()["agreement"]
-    assert redrafted["version"] == 2 and redrafted["signed_by_me_at"] is None
+    as_party("user_b")
+    second = client.post("/api/sessions/sess_abc/agreement/draft").json()["agreement"]
+    # No second draft is written, and A's signature stands.
+    assert len(agents.of("DRAFTER")) == 1
+    assert second["version"] == first["version"] == 1 and second["summary"] == first["summary"]
+    as_party("user_a")
+    assert client.get("/api/sessions/sess_abc/joint").json()["agreement"]["signed_by_me_at"] is not None
+
+
+def test_a_draft_written_meanwhile_by_the_other_person_wins(room, as_party, agents):
+    _agree_on_first(as_party)
+    real_summarize = joint_module.summarize_agreement
+
+    def other_person_drafts_first(**kwargs):
+        written = real_summarize(**kwargs)
+        ideas = joint_module.list_ideas("sess_abc")
+        agreed = joint_module.agreed_idea_ids(ideas, joint_module.list_responses("sess_abc"))
+        joint_module.save_agreement("sess_abc", {
+            "version": 1, "summary": "Theirs", "terms": [{"idea_id": idea_id, "text": "x"} for idea_id in agreed], "flags": [],
+            "created_by": "user_b", "created_at": "2026-06-01T00:00:00Z", "signed_a_at": None, "signed_b_at": None,
+        })
+        return written
+
+    with patch.object(joint_module, "summarize_agreement", other_person_drafts_first):
+        agreement = client.post("/api/sessions/sess_abc/agreement/draft").json()["agreement"]
+    assert agreement["summary"] == "Theirs"
 
 
 def test_one_sided_resolve_is_gone(room, as_party):

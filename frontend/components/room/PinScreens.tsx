@@ -33,6 +33,42 @@ function PinField({
   );
 }
 
+const ASCENDING = "01234567890";
+const DESCENDING = "09876543210";
+
+/** The PIN rules, checked as the person types. Dates are checked by the server. */
+function pinRules(pin: string) {
+  const full = pin.length === 6;
+  const pattern = new Set(pin).size <= 2 || pin.slice(0, 3) === pin.slice(3) || ASCENDING.includes(pin) || DESCENDING.includes(pin);
+  return [
+    { label: `Exactly 6 digits (${pin.length}/6)`, ok: full },
+    { label: "Numbers only", ok: pin.length > 0 && /^\d+$/.test(pin) },
+    { label: "Not a pattern like 111111, 121212 or 123456", ok: full && !pattern },
+    { label: "Not a date or birthday, like 150890", ok: false },
+  ];
+}
+
+function PinRules({ pin }: { pin: string }) {
+  return (
+    <div className="rounded-2xl bg-card px-4 py-3 shadow-[0_1px_0_rgba(36,28,22,0.08)]">
+      <p className="text-sm font-medium text-ink">PIN rules</p>
+      <ul className="mt-2 space-y-1.5 text-[13px] leading-snug">
+        {pinRules(pin).map((rule) => (
+          <li key={rule.label} className={`flex items-start gap-2 ${rule.ok ? "text-teal" : "text-muted"}`}>
+            <span aria-hidden="true" className="w-4 shrink-0 text-center">
+              {rule.ok ? "✓" : "•"}
+            </span>
+            <span>
+              {rule.label}
+              {rule.ok ? <span className="sr-only"> (done)</span> : null}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 type ChoosePinProps = {
   inviter: string | null;
   invitedAs: string | null;
@@ -88,11 +124,11 @@ export function ChoosePin({ inviter, invitedAs, onChoose }: ChoosePinProps) {
           it, the link opens nothing. Keep it to yourself.
         </p>
         <PinField label="Choose a PIN" value={pin} onChange={setPin} autoComplete="new-password" />
+        <PinRules pin={pin} />
         <PinField label="Type it again" value={again} onChange={setAgain} autoComplete="new-password" />
-        <ul className="list-disc space-y-1 pl-5 text-[13px] leading-relaxed text-muted">
-          <li>Don&apos;t use a birthday or an easy pattern. Family can guess those.</li>
-          <li>We can&apos;t show it to you again, so remember it. You&apos;ll need it each time you come back.</li>
-        </ul>
+        <p className="text-[13px] leading-relaxed text-muted">
+          We can&apos;t show your PIN again, so remember it. You&apos;ll need it each time you come back.
+        </p>
         {error ? (
           <p role="alert" className="text-sm text-terracotta">
             {error}

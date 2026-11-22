@@ -222,6 +222,11 @@ def respond_to_idea(idea_id: str, body: RespondBody, ctx: tuple[dict, Actor] = D
     return _joint_state(session["id"], actor.party)
 
 
+def _drafted_for(agreement: dict | None, agreed: list[str]) -> bool:
+    """True when the current draft already covers exactly these agreed ideas."""
+    return bool(agreement) and [term.get("idea_id") for term in agreement.get("terms") or []] == list(agreed)
+
+
 @router.post("/sessions/{session_id}/agreement/draft", response_model=JointStateOut)
 def draft_agreement(ctx: tuple[dict, Actor] = Depends(get_actor)):
     session, actor = ctx
@@ -231,12 +236,20 @@ def draft_agreement(ctx: tuple[dict, Actor] = Depends(get_actor)):
     agreed = agreed_idea_ids(ideas, list_responses(session["id"]))
     if not agreed:
         raise HTTPException(status_code=409, detail="Agree on at least one idea first.")
+    # One draft for both people: whoever asks first gets it written, and the
+    # other person is shown the same one. A new draft is only written when the
+    # agreed ideas have changed since.
+    if _drafted_for(get_agreement(session["id"]), agreed):
+        return _joint_state(session["id"], actor.party)
     text_by_id = {idea["id"]: idea["text"] for idea in ideas}
     terms = [{"idea_id": idea_id, "text": text_by_id[idea_id]} for idea_id in agreed]
 
     with track_calls(session["id"]):
         written = summarize_agreement(state=load_state(session), terms=[term["text"] for term in terms])
     previous = get_agreement(session["id"])
+    if _drafted_for(previous, agreed):
+        # The other person's draft landed while this one was being written.
+        return _joint_state(session["id"], actor.party)
     save_agreement(
         session["id"],
         {
